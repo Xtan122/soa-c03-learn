@@ -14,8 +14,8 @@ Practice exam chỉ bắt đầu mạnh từ **tuần 5–6**.
 > Đếm số `[x]` để biết tiến độ. Mỗi lab có checklist phase riêng trong file tuần.
 
 ### Week 1 — Monitoring & Logging → `week1-monitoring.md`
-- [ ] LAB 01 — CloudWatch Fundamentals
-- [ ] LAB 02 — CloudWatch Alarm
+- [x] LAB 01 — CloudWatch Fundamentals
+- [x] LAB 02 — CloudWatch Alarm
 - [ ] LAB 03 — CloudWatch Logs
 - [ ] LAB 04 — Metric Filter
 - [ ] LAB 05 — CloudTrail Investigation
