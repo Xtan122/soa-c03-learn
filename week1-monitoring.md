@@ -3,9 +3,9 @@
 > **Mục tiêu tuần:** nhìn metric/log/event → phát hiện vấn đề → tìm nguyên nhân.
 > **Domain:** Domain 1 – Monitoring, Logging, Analysis, Remediation & Performance Optimization (22%).
 
-- [ ] LAB 01 — CloudWatch Fundamentals
-- [ ] LAB 02 — CloudWatch Alarm
-- [ ] LAB 03 — CloudWatch Logs
+- [x] LAB 01 — CloudWatch Fundamentals
+- [x] LAB 02 — CloudWatch Alarm
+- [x] LAB 03 — CloudWatch Logs
 - [ ] LAB 04 — Metric Filter
 - [ ] LAB 05 — CloudTrail Investigation
 - [ ] LAB 06 — EventBridge
@@ -104,7 +104,7 @@ Verify → Document → Cleanup
 ## LAB 03 — CloudWatch Logs
 
 ⏱ 1.5h · Tuần 1 · Độ khó ★★☆
-`[ ] Build  [ ] Break  [ ] Diagnose  [ ] Fix  [ ] Verify  [ ] Cleanup`
+`[x] Build  [x] Break  [x] Diagnose  [x] Fix  [x] Verify  [ ] Cleanup`
 
 ### Dựng
 ```text
