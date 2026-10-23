@@ -17,7 +17,7 @@ Practice exam chỉ bắt đầu mạnh từ **tuần 5–6**.
 - [x] LAB 01 — CloudWatch Fundamentals
 - [x] LAB 02 — CloudWatch Alarm
 - [x] LAB 03 — CloudWatch Logs
-- [ ] LAB 04 — Metric Filter
+- [x] LAB 04 — Metric Filter
 - [ ] LAB 05 — CloudTrail Investigation
 - [ ] LAB 06 — EventBridge
 - [ ] LAB 07 — Monitoring Capstone
@@ -88,7 +88,7 @@ Practice exam chỉ bắt đầu mạnh từ **tuần 5–6**.
 | **W1-D1** | 01 CloudWatch | [ ] |
 | W1-D2 | 02 Alarm | [ ] |
 | W1-D3 | 03 Logs | [x] |
-| W1-D4 | 04 Metric Filter | [ ] |
+| W1-D4 | 04 Metric Filter | [x] |
 | W1-D5 | 05 CloudTrail | [ ] |
 | W1-D6 | 06 EventBridge | [ ] |
 | W1-D7 | nghỉ |  |

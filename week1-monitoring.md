@@ -6,7 +6,7 @@
 - [x] LAB 01 — CloudWatch Fundamentals
 - [x] LAB 02 — CloudWatch Alarm
 - [x] LAB 03 — CloudWatch Logs
-- [ ] LAB 04 — Metric Filter
+- [x] LAB 04 — Metric Filter
 - [ ] LAB 05 — CloudTrail Investigation
 - [ ] LAB 06 — EventBridge
 - [ ] LAB 07 — Monitoring Capstone
@@ -151,7 +151,7 @@ Verify → Document → Cleanup
 ## LAB 04 — Metric Filter
 
 ⏱ 1.5h · Tuần 1 · Độ khó ★★☆
-`[ ] Build  [ ] Break  [ ] Diagnose  [ ] Fix  [ ] Verify  [ ] Cleanup`
+`[x] Build  [x] Break  [x] Diagnose  [x] Fix  [x] Verify  [x] Cleanup`
 
 ### Dựng
 Tạo application log:
