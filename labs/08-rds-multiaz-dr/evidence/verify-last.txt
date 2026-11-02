@@ -1,0 +1,2 @@
+verify 2026-10-31T18:14:14Z lab=08
+ OK  MultiAZ=True status=available failoverEvent=yes app/db=200

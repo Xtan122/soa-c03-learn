@@ -1,0 +1,2 @@
+verify 2026-10-28T07:12:10Z lab=05
+ OK  path=/health code=200 healthy=1

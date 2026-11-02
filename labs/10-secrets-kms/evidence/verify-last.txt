@@ -1,0 +1,2 @@
+verify 2026-11-02T08:09:53Z lab=10
+ OK  role soa-c03-lab10-reader decrypted S3 object and read the secret

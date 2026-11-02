@@ -28,4 +28,4 @@ PHASES: Build [x] Break [x] Diagnose [x] Fix [x] Verify [x] Cleanup [ ]
    - Cửa sổ đánh giá = Period × evaluation-periods (`2 out of 2` với period 5m = "2 datapoints within 10 minutes").
 
 ---
-⬅️ [Week 1](../week1-monitoring.md) · [README](../README.md)
+⬅️ [README](../README.md) · [Exam map](../docs/exam-map.md)

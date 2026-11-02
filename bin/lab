@@ -1,0 +1,392 @@
+#!/usr/bin/env bash
+# Lab CLI. Run ./bin/lab help
+set -Eeuo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export ROOT
+
+source "$ROOT/scripts/load-env.sh"
+source "$ROOT/scripts/lib/common.sh"
+source "$ROOT/scripts/lib/labs.sh"
+
+usage() {
+  cat <<'EOF'
+SOA-C03 CloudOps Lab CLI
+
+  ./bin/lab list                 List all labs and progress
+  ./bin/lab status               Stacks, URL, targets, alarms, SSM
+  ./bin/lab up <id>              Prepare the lab (deploy app / lab resources)
+  ./bin/lab break <id>           Inject the fault (requires ALLOW_BREAK=yes)
+  ./bin/lab verify <id>          Run the pass/fail checks
+  ./bin/lab hint <id>            Show a progressive hint
+  ./bin/lab brief <id>           Pre-break brief: concepts, baseline, diagnostic map
+  ./bin/lab baseline <id>        Show expected baseline; --live reads AWS (read-only)
+  ./bin/lab teach <id>           Print the I do / We do / You do teaching script
+  ./bin/lab change <id>          Show what changed after break (--sealed for detail)
+  ./bin/lab console <id>         Show the exact console click path for the lab
+  ./bin/lab preflight <id>       Static checks (add --live for read-only AWS checks)
+  ./bin/lab reset <id>           Restore the baseline (solution used)
+  ./bin/lab down <id>            Remove lab-specific resources
+  ./bin/lab note <id>            Create evidence/note.md
+  ./bin/lab progress             Progress bar
+  ./bin/lab doctor               Pre-flight checks
+  ./bin/lab cost                 Spend + leftover resources
+  ./bin/lab inventory            Tagged resource inventory
+  ./bin/lab cleanup              Full teardown (CONFIRM_DESTROY=yes)
+  ./bin/lab init                 Create .env
+  ./bin/lab bootstrap            One-time core setup
+  ./bin/lab app-up / app-down    Deploy/delete the app stack
+
+Examples:
+  ./bin/lab up 05
+  ALLOW_BREAK=yes ./bin/lab break 05
+  ./bin/lab verify 05
+  ./bin/lab down 05
+EOF
+}
+
+find_lab_dir() {
+  local raw="${1:-}" id dirs
+  [[ -n "$raw" ]] || die "missing lab id (example: 05)"
+  id="$(printf '%02d' "$((10#$raw))" 2>/dev/null || true)"
+  [[ -n "$id" ]] || die "invalid lab id: $raw"
+  dirs=( "$ROOT"/labs/"$id"-* )
+  [[ -d "${dirs[0]}" ]] || die "lab $id not found in labs/"
+  printf '%s' "${dirs[0]}"
+}
+
+load_lab() {
+  LAB_DIR="$(find_lab_dir "$1")"
+  # shellcheck disable=SC1091
+  set -a; source "$LAB_DIR/lab.env"; set +a
+  LAB_NUM="$(printf '%02d' "$((10#$LAB_ID))")"
+  export LAB_DIR LAB_ID LAB_NUM LAB_TITLE DOMAIN MINUTES COST NEEDS_APP
+}
+
+lab_fn() {
+  local suffix="$1"
+  printf 'lab%s_%s' "$LAB_NUM" "$suffix"
+}
+
+has_lab_fn() { declare -F "$(lab_fn "$1")" >/dev/null 2>&1; }
+
+cmd_list() {
+  exec python3 "$ROOT/scripts/lab-list.py" "$ROOT"
+}
+
+cmd_progress() {
+  local total=0 completed=0 verified=0 dir
+  for dir in "$ROOT"/labs/*/; do
+    [[ -f "$dir/lab.env" ]] || continue
+    total=$((total + 1))
+    if [[ -f "$dir/evidence/DONE" ]]; then
+      verified=$((verified + 1))
+      [[ -f "$dir/evidence/note.md" ]] && completed=$((completed + 1))
+    fi
+  done
+  local width=30 filled
+  filled=$(( completed * width / (total == 0 ? 1 : total) ))
+  printf '%s [' "$completed/$total"
+  printf '%*s' "$filled" '' | tr ' ' '#'
+  printf '%*s' $((width - filled)) '' | tr ' ' '-'
+  printf ']\n'
+  if (( verified > completed )); then
+    printf 'verify-only: %s (missing evidence/note.md)\n' "$((verified - completed))"
+  fi
+}
+
+cmd_status() {
+  show_banner
+  require_account
+  printf 'core : %-18s %s\n' "$CORE_STACK" "$(stack_status "$CORE_STACK")"
+  printf 'app  : %-18s %s\n' "$APP_STACK" "$(stack_status "$APP_STACK")"
+
+  if stack_exists "$APP_STACK"; then
+    local url code tg healthy total id ssm
+    url="$(app_url)"; code="$(http_code "$url/health")"
+    printf 'url  : %s/health -> %s\n' "$url" "$code"
+    tg="$(app_tg)"
+    healthy="$(aws elbv2 describe-target-health --target-group-arn "$tg" \
+      --query "length(TargetHealthDescriptions[?TargetHealth.State=='healthy'])" --output text 2>/dev/null || echo 0)"
+    total="$(aws elbv2 describe-target-health --target-group-arn "$tg" \
+      --query 'length(TargetHealthDescriptions)' --output text 2>/dev/null || echo 0)"
+    printf 'tg   : %s/%s healthy\n' "$healthy" "$total"
+    id="$(app_instance 2>/dev/null || true)"
+    if [[ -n "$id" ]]; then
+      ssm="$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=$id" \
+        --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || echo None)"
+      printf 'ec2  : %s  SSM=%s\n' "$id" "$ssm"
+    fi
+    echo
+    info "alarms"
+    aws cloudwatch describe-alarms --alarm-name-prefix "$LAB_PREFIX" \
+      --query 'MetricAlarms[].[AlarmName,StateValue]' --output table 2>/dev/null || true
+  else
+    dim "app stack is down (normal between sessions). make app-up when needed."
+  fi
+}
+
+cmd_up() {
+  load_lab "$1"
+  show_banner
+  printf '%s %s\n' "${C_BOLD}$LAB_ID${C_RESET}" "$LAB_TITLE"
+  python3 "$ROOT/tools/check_labs.py" --lab "$LAB_ID" --quiet \
+    || die "static lab checks failed; run ./bin/lab preflight $LAB_ID for details"
+  # A new up invalidates the previous brief confirmation/change note.
+  rm -f "$ROOT/var/lab${LAB_ID}-brief-ok" "$ROOT/var/lab${LAB_ID}-change.md"
+  require_account
+  if has_lab_fn build; then
+    "$(lab_fn build)"
+  else
+    lab_default_build
+  fi
+  record_event "$LAB_ID" up ok
+  ok "lab $LAB_ID is ready. Next: ./bin/lab brief $LAB_ID, then break"
+  dim "  Read: labs/$LAB_ID-*/README.md mục 0 + 5c + 5d, or ./bin/lab console $LAB_ID"
+  dim "  AI mentor: follow docs/ai-mentor-runbook.md (one screen + one button per turn)"
+}
+
+cmd_console() {
+  load_lab "$1"
+  local readme="$LAB_DIR/README.md" mode="${2:-}"
+  [[ -f "$readme" ]] || die "missing $readme"
+  local block
+  block="$(awk '/<!-- console-guide:start -->/{flag=1;next}/<!-- console-guide:end -->/{flag=0}flag' "$readme")"
+  [[ -n "$block" ]] || die "no console guide in $readme (run tools/gen_lab_docs.py)"
+  if [[ "$mode" == "--links" ]]; then
+    printf '%s\n' "$block" | sed -n 's/^- \[\(.*\)\](\(https:\/\/[^)]*\))$/\2  \1/p'
+    return 0
+  fi
+  if [[ "$mode" == "--open" ]]; then
+    local url
+    url="$(printf '%s\n' "$block" | sed -n 's/^- \[.*\](\(https:\/\/[^)]*\))$/\1/p' | head -1)"
+    [[ -n "$url" ]] || die "no link to open"
+    printf '%s\n' "$url"
+    if command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "$url" >/dev/null 2>&1 &
+    else
+      warn "xdg-open not found; copy the URL above"
+    fi
+    return 0
+  fi
+  printf '%s %s\n\n' "${C_BOLD}$LAB_ID${C_RESET}" "$LAB_TITLE"
+  printf '%s\n' "$block"
+}
+
+cmd_preflight() {
+  local id="${1:-}" live="${2:-}"
+  [[ -n "$id" ]] || die "missing lab id (example: 05)"
+  local args=(--lab "$id")
+  [[ "$live" == "--live" ]] && args+=(--live)
+  exec python3 "$ROOT/tools/lab_preflight.py" "${args[@]}"
+}
+
+cmd_break() {
+  load_lab "$1"
+  require_break
+  printf '%s %s\n' "${C_BOLD}$LAB_ID${C_RESET}" "$LAB_TITLE"
+  if [[ "${CONFIRM_BREAK:-}" != "yes" ]]; then
+    [[ -t 0 ]] || die "non-interactive: set CONFIRM_BREAK=yes"
+    local answer
+    read -r -p "Inject the fault into $LAB_ACCOUNT_ID/$AWS_REGION? [type yes]: " answer
+    [[ "$answer" == "yes" ]] || die "aborted"
+  fi
+  has_lab_fn break || die "lab $LAB_ID has no break step (build/verify lab)"
+  if [[ "$LAB_ID" != "00" && ! -f "$ROOT/var/lab${LAB_ID}-brief-ok" ]]; then
+    if [[ "${REQUIRE_BRIEF:-no}" == "yes" ]]; then
+      die "baseline not confirmed. Run: ./bin/lab brief $LAB_ID; answer the 3 questions; ./bin/lab brief $LAB_ID --confirm"
+    fi
+    warn "baseline not confirmed. Recommended: ./bin/lab brief $LAB_ID (then --confirm). Set REQUIRE_BRIEF=yes to enforce."
+  fi
+  if "$(lab_fn break)"; then
+    record_event "$LAB_ID" break ok
+    mkdir -p "$ROOT/var"
+    printf 'time=%s\nchange=fault injected\nsealed=n/a\n' "$(now_utc)" \
+      > "$ROOT/var/lab${LAB_ID}-change.md"
+    # Pilot labs have a richer, sealed change note.
+    python3 "$ROOT/tools/lab_brief.py" record-change "$LAB_ID" >/dev/null 2>&1 || true
+    echo
+    if [[ "$LAB_ID" == "00" ]]; then
+      ok "baseline step completed. Lab 00 has no fault."
+    else
+      ok "fault injected. Diagnose without reading scripts/lib/labs.sh."
+    fi
+    echo "  Hint: ./bin/lab hint $LAB_ID"
+    echo "  Change note: ./bin/lab change $LAB_ID"
+    echo "  Verify: ./bin/lab verify $LAB_ID"
+  else
+    record_event "$LAB_ID" break failed
+    die "break step failed"
+  fi
+}
+
+cmd_verify() {
+  load_lab "$1"
+  require_account
+  mkdir -p "$LAB_DIR/evidence"
+  local out="$LAB_DIR/evidence/verify-last.txt"
+  echo "verify $(now_utc) lab=$LAB_ID" | tee "$out"
+  if has_lab_fn verify && "$(lab_fn verify)" 2>&1 | tee -a "$out"; then
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$LAB_DIR/evidence/DONE"
+    record_event "$LAB_ID" verify pass
+    echo
+    ok "PASS. DONE marker written to $LAB_DIR/evidence/DONE"
+    echo "  Evidence: ./bin/lab note $LAB_ID"
+  else
+    record_event "$LAB_ID" verify fail
+    echo
+    die "FAIL. Read the failure, fix the system, run verify again."
+  fi
+}
+
+cmd_brief() {
+  load_lab "$1"
+  local mode="${2:-}"
+  printf '%s %s\n\n' "${C_BOLD}$LAB_ID${C_RESET}" "$LAB_TITLE"
+  python3 "$ROOT/tools/lab_brief.py" brief "$LAB_ID" \
+    || die "brief failed for lab $LAB_ID"
+  if [[ "$mode" == "--confirm" ]]; then
+    mkdir -p "$ROOT/var"
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$ROOT/var/lab${LAB_ID}-brief-ok"
+    ok "baseline confirmed for lab $LAB_ID — now you may break"
+  fi
+}
+
+cmd_baseline() {
+  load_lab "$1"
+  local mode="${2:-}"
+  case "$mode" in
+    ""|--live) ;;
+    *) die "usage: ./bin/lab baseline $LAB_ID [--live]" ;;
+  esac
+  python3 "$ROOT/tools/lab_brief.py" baseline "$LAB_ID" ${mode:+"$mode"} \
+    || die "baseline failed"
+}
+
+cmd_teach() {
+  load_lab "$1"
+  python3 "$ROOT/tools/lab_brief.py" teach "$LAB_ID" \
+    || die "teach script failed for lab $LAB_ID"
+}
+
+cmd_change() {
+  load_lab "$1"
+  local mode="${2:-}"
+  case "$mode" in
+    ""|--sealed) ;;
+    *) die "usage: ./bin/lab change $LAB_ID [--sealed]" ;;
+  esac
+  python3 "$ROOT/tools/lab_brief.py" change "$LAB_ID" ${mode:+"$mode"} \
+    || warn "no change note yet (run ./bin/lab break $LAB_ID first)"
+}
+
+cmd_hint() {
+  load_lab "$1"
+  echo "${C_BOLD}$LAB_ID — $LAB_TITLE${C_RESET}"
+  echo
+  echo "Hint 1: ${HINT1:-No hint. Start from the symptom and work down the dependency chain.}"
+  echo "Hint 2: ${HINT2:-Check CloudWatch metrics, logs and the resource configuration.}"
+  echo "Hint 3: ${HINT3:-Compare desired state with actual state. What changed last?}"
+}
+
+cmd_reset() {
+  load_lab "$1"
+  require_account
+  local answer
+  if [[ "${CONFIRM_RESET:-}" != "yes" ]]; then
+    [[ -t 0 ]] || die "non-interactive: set CONFIRM_RESET=yes"
+    read -r -p "Restore baseline for lab $LAB_ID? This reveals the solution. [type yes]: " answer
+    [[ "$answer" == "yes" ]] || die "aborted"
+  fi
+  if has_lab_fn reset; then
+    "$(lab_fn reset)"
+  elif has_lab_fn cleanup; then
+    "$(lab_fn cleanup)"
+  else
+    die "no reset function"
+  fi
+  record_event "$LAB_ID" reset ok "solution used"
+  ok "baseline restored"
+}
+
+cmd_down() {
+  load_lab "$1"
+  require_account
+  if has_lab_fn cleanup; then
+    if [[ "${NEEDS_APP:-no}" == "yes" ]] && ! stack_exists "$APP_STACK"; then
+      warn "app stack is down; running best-effort lab cleanup only"
+      ( set +e; "$(lab_fn cleanup)" ) || true
+    else
+      "$(lab_fn cleanup)"
+    fi
+  else
+    dim "no lab-specific cleanup; stack resources remain unchanged"
+  fi
+  record_event "$LAB_ID" down ok
+  rm -f "$ROOT/var/lab${LAB_ID}-brief-ok" "$ROOT/var/lab${LAB_ID}-change.md"
+  ok "lab $LAB_ID resources cleaned"
+}
+
+cmd_note() {
+  load_lab "$1"
+  mkdir -p "$LAB_DIR/evidence"
+  local f="$LAB_DIR/evidence/note.md"
+  if [[ -f "$f" ]]; then
+    echo "note exists: $f"
+    return 0
+  fi
+  cat > "$f" <<EOF
+# LAB $LAB_ID — $LAB_TITLE
+
+\`\`\`text
+LAB: $LAB_ID — $LAB_TITLE
+SERVICE:
+DATE: $(today_utc)
+DOMAIN: $DOMAIN
+PHASES: Build [x] Break [x] Diagnose [x] Fix [ ] Verify [x] Cleanup [ ]
+\`\`\`
+
+1. What did I build?
+
+2. What failed? (symptom, not root cause)
+
+3. How did I detect it? (metric/log/event/CLI)
+
+4. Root cause (the actual broken layer)
+
+5. How did I fix it? (exact command or console action)
+
+6. Prevention / automation
+
+7. Exam trap
+EOF
+  ok "created $f"
+}
+
+case "${1:-help}" in
+  list)       cmd_list ;;
+  progress)   cmd_progress ;;
+  status)     cmd_status ;;
+  up)         cmd_up "${2:-}" ;;
+  break)      cmd_break "${2:-}" ;;
+  verify)     cmd_verify "${2:-}" ;;
+  hint)       cmd_hint "${2:-}" ;;
+  brief)      cmd_brief "${2:-}" "${3:-}" ;;
+  baseline)   cmd_baseline "${2:-}" "${3:-}" ;;
+  teach)      cmd_teach "${2:-}" ;;
+  change)     cmd_change "${2:-}" "${3:-}" ;;
+  console)    cmd_console "${2:-}" "${3:-}" ;;
+  preflight)  cmd_preflight "${2:-}" "${3:-}" ;;
+  reset)      cmd_reset "${2:-}" ;;
+  down)       cmd_down "${2:-}" ;;
+  note)       cmd_note "${2:-}" ;;
+  doctor)     exec "$ROOT/scripts/doctor.sh" ;;
+  cost)       exec "$ROOT/scripts/cost-check.sh" ;;
+  inventory)  exec "$ROOT/scripts/inventory.sh" ;;
+  cleanup)    exec "$ROOT/scripts/cleanup-all.sh" ;;
+  init)       exec "$ROOT/scripts/init.sh" ;;
+  bootstrap)  exec "$ROOT/scripts/bootstrap.sh" ;;
+  app-up)     exec "$ROOT/scripts/app-up.sh" ;;
+  app-down)   exec "$ROOT/scripts/app-down.sh" ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac

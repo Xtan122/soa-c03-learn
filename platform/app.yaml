@@ -1,0 +1,496 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SOA-C03 on-demand app stack: ALB + ASG + EC2 app + RDS PostgreSQL + alarms.
+  Deploy for a lab session, delete the same day. Imports the persistent core stack.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: soa-c03
+  InstanceType:
+    Type: String
+    Default: t4g.micro
+    Description: ARM64 instance type. t4g.micro is ~USD 0.0106/hour in ap-southeast-1.
+  MinSize:
+    Type: Number
+    Default: 1
+  MaxSize:
+    Type: Number
+    Default: 2
+  DesiredCapacity:
+    Type: Number
+    Default: 1
+  DBInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+  DBName:
+    Type: String
+    Default: cloudops
+    AllowedPattern: "^[a-z][a-z0-9]{0,62}$"
+  DBUser:
+    Type: String
+    Default: cloudops
+    AllowedPattern: "^[a-z][a-z0-9_]{0,62}$"
+  AppPort:
+    Type: Number
+    Default: 8080
+  MultiAZ:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Keep false except Lab 08 (Multi-AZ failover).
+  ExpiryDate:
+    Type: String
+    Default: "2026-12-01"
+  AlertTopicArn:
+    Type: String
+  BucketName:
+    Type: String
+  KmsKeyArn:
+    Type: String
+  LogGroupName:
+    Type: String
+  InstanceProfileName:
+    Type: String
+
+Conditions:
+  MultiAZCondition: !Equals [!Ref MultiAZ, "true"]
+
+Resources:
+  # ----------------------------------------------------------- security
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB public HTTP
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectName}-VpcId"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Lab HTTP. Tighten this after the lab.
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-alb-sg"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: App instances; SSM and S3 egress
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectName}-VpcId"
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: Lab baseline. Tighten with VPC endpoints later.
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-app-sg"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS PostgreSQL from app instances only
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectName}-VpcId"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+          Description: PostgreSQL from app SG
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-db-sg"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  # Standalone rules avoid a CloudFormation circular dependency between the
+  # ALB SG and the app SG.
+  AppIngressFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref AppSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref AppPort
+      ToPort: !Ref AppPort
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Description: Traffic from the ALB only
+
+  AlbEgressToApp:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref AlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref AppPort
+      ToPort: !Ref AppPort
+      DestinationSecurityGroupId: !Ref AppSecurityGroup
+      Description: Only to the app instances
+
+  # ------------------------------------------------------------------ alb
+  Alb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-alb"
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        Fn::Split:
+          - ","
+          - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnets"
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg"
+      Port: !Ref AppPort
+      Protocol: HTTP
+      TargetType: instance
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectName}-VpcId"
+      HealthCheckEnabled: true
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: traffic-port
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "10"
+        - Key: stickiness.enabled
+          Value: "false"
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref Alb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ------------------------------------------------------------------ ec2
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${ProjectName}-app"
+      LaunchTemplateData:
+        ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}"
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Name: !Ref InstanceProfileName
+        SecurityGroupIds: [!Ref AppSecurityGroup]
+        Monitoring:
+          Enabled: true
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 2
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - {Key: Name, Value: !Sub "${ProjectName}-app"}
+              - {Key: Project, Value: !Ref ProjectName}
+              - {Key: Lab, Value: soa-c03}
+              - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euxo pipefail
+            exec > >(tee /var/log/cloudops-bootstrap.log) 2>&1
+
+            dnf install -y python3 python3-pip amazon-cloudwatch-agent jq
+            dnf install -y postgresql15 || dnf install -y postgresql16 || true
+            command -v aws >/dev/null || dnf install -y awscli-2 || dnf install -y awscli
+            # The binary can exist but be unusable (awscli-2 on AL2023 needs
+            # python3-dateutil, which some AMIs ship without the files for).
+            # Verify it runs before relying on it for the s3 fetch below.
+            if ! aws --version >/dev/null 2>&1; then
+              dnf reinstall -y python3-dateutil || dnf install -y python3-dateutil || true
+            fi
+            aws --version >/dev/null 2>&1 || { echo "FATAL: awscli is not usable" >&2; exit 1; }
+
+            # Keep app dependencies out of the system Python. Installing boto3
+            # with pip3 can break the AWS CLI v2 shipped with AL2023.
+            python3 -m venv /opt/cloudops/venv
+            /opt/cloudops/venv/bin/pip install --no-cache-dir boto3 pg8000
+
+            mkdir -p /opt/cloudops /var/log/cloudops /opt/aws/amazon-cloudwatch-agent/etc
+            aws s3 cp "s3://${BucketName}/platform/app.py" /opt/cloudops/app.py
+            aws s3 cp "s3://${BucketName}/platform/cloudops-app.service" /etc/systemd/system/cloudops-app.service
+            aws s3 cp "s3://${BucketName}/platform/cloudwatch-agent.json" /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+            sed -i "s|__LOG_GROUP__|${LogGroupName}|g" /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+            cat > /etc/cloudops.env <<EOF
+            PORT=${AppPort}
+            DB_HOST=${Database.Endpoint.Address}
+            DB_PORT=${Database.Endpoint.Port}
+            DB_NAME=${DBName}
+            DB_USER=${DBUser}
+            DB_SECRET_ARN=${Database.MasterUserSecret.SecretArn}
+            AWS_REGION=${AWS::Region}
+            LOG_GROUP=${LogGroupName}
+            EOF
+            chmod 600 /etc/cloudops.env
+
+            systemctl daemon-reload
+            systemctl enable --now cloudops-app
+
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+              -a fetch-config -m ec2 -s \
+              -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 0
+        MaxBatchSize: 1
+        PauseTime: PT1M
+    Properties:
+      AutoScalingGroupName: !Sub "${ProjectName}-asg"
+      VPCZoneIdentifier:
+        Fn::Split:
+          - ","
+          - Fn::ImportValue: !Sub "${ProjectName}-PublicSubnets"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: !Ref MinSize
+      MaxSize: !Ref MaxSize
+      DesiredCapacity: !Ref DesiredCapacity
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 600
+      TargetGroupARNs: [!Ref TargetGroup]
+      MetricsCollection:
+        - Granularity: "1Minute"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+          PropagateAtLaunch: true
+        - Key: Lab
+          Value: soa-c03
+          PropagateAtLaunch: true
+        - Key: ExpiryDate
+          Value: !Ref ExpiryDate
+          PropagateAtLaunch: true
+
+  CpuTargetTrackingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 50
+        DisableScaleIn: false
+
+  # ------------------------------------------------------------------ rds
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private subnets for the lab database
+      SubnetIds:
+        Fn::Split:
+          - ","
+          - Fn::ImportValue: !Sub "${ProjectName}-PrivateSubnets"
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "${ProjectName}-db"
+      Engine: postgres
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: "20"
+      StorageType: gp3
+      StorageEncrypted: true
+      KmsKeyId: !Ref KmsKeyArn
+      MasterUsername: !Ref DBUser
+      DBName: !Ref DBName
+      ManageMasterUserPassword: true
+      MultiAZ: !If [MultiAZCondition, true, false]
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups: [!Ref DbSecurityGroup]
+      BackupRetentionPeriod: 1
+      CopyTagsToSnapshot: true
+      DeletionProtection: false
+      AutoMinorVersionUpgrade: true
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: Lab, Value: soa-c03}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  # -------------------------------------------------------------- alarms
+  Alb5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-alb-5xx"
+      AlarmDescription: ALB is returning 5xx to clients
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_ELB_5XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt Alb.LoadBalancerFullName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  UnhealthyHostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-unhealthy-hosts"
+      AlarmDescription: At least one target is unhealthy
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt TargetGroup.TargetGroupFullName
+        - Name: LoadBalancer
+          Value: !GetAtt Alb.LoadBalancerFullName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  AsgCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-asg-cpu"
+      AlarmDescription: ASG average CPU above 70 percent
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 70
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  RdsCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-cpu"
+      AlarmDescription: RDS CPU above 80 percent
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref Database
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  RdsFreeStorageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-rds-free-storage"
+      AlarmDescription: RDS free storage below 2 GiB
+      Namespace: AWS/RDS
+      MetricName: FreeStorageSpace
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref Database
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 2147483648
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  # --------------------------------------------------------- eventbridge
+  Ec2StateChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-ec2-state"
+      Description: Notify on EC2 stopped or terminated
+      EventPattern:
+        source: [aws.ec2]
+        detail-type: ["EC2 Instance State-change Notification"]
+        detail:
+          state: [stopped, terminated]
+      Targets:
+        - Id: sns-alerts
+          Arn: !Ref AlertTopicArn
+
+Outputs:
+  AlbDnsName:
+    Value: !GetAtt Alb.DNSName
+  AlbFullName:
+    Value: !GetAtt Alb.LoadBalancerFullName
+  TargetGroupArn:
+    Value: !Ref TargetGroup
+  TargetGroupFullName:
+    Value: !GetAtt TargetGroup.TargetGroupFullName
+  AsgName:
+    Value: !Ref AutoScalingGroup
+  LaunchTemplateId:
+    Value: !Ref LaunchTemplate
+  LaunchTemplateVersion:
+    Value: !GetAtt LaunchTemplate.LatestVersionNumber
+  DbInstanceIdentifier:
+    Value: !Ref Database
+  DbEndpoint:
+    Value: !GetAtt Database.Endpoint.Address
+  DbPort:
+    Value: !GetAtt Database.Endpoint.Port
+  DbSecretArn:
+    Value: !GetAtt Database.MasterUserSecret.SecretArn
+  DbSubnetGroupName:
+    Value: !Ref DbSubnetGroup
+  AppSecurityGroupId:
+    Value: !Ref AppSecurityGroup
+  AlbSecurityGroupId:
+    Value: !Ref AlbSecurityGroup
+  DbSecurityGroupId:
+    Value: !Ref DbSecurityGroup
+  TargetGroupId:
+    Value: !GetAtt TargetGroup.TargetGroupArn
+  ListenerArn:
+    Value: !Ref Listener

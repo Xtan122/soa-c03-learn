@@ -1,0 +1,2 @@
+verify 2026-10-25T04:16:06Z lab=02
+ OK  ERROR logs=16 metric=16 alarm=OK

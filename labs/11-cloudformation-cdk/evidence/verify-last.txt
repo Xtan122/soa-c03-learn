@@ -1,0 +1,2 @@
+verify 2026-11-02T08:45:34Z lab=11
+ OK  stack soa-c03-lab11 status=UPDATE_COMPLETE (rollback recovered)

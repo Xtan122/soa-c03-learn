@@ -30,4 +30,4 @@ PHASES: Build [x] Break [x] Diagnose [x] Fix [ ] Verify [ ] Cleanup [ ]
    - CPU dùng Average/Maximum (Maximum bắt được spike ngắn); Network dùng Sum (tổng byte/period).
 
 ---
-⬅️ [Week 1](../week1-monitoring.md) · [README](../README.md)
+⬅️ [README](../README.md) · [Exam map](../docs/exam-map.md)

@@ -1,0 +1,19 @@
+.env
+var/
+*.tfstate
+*.tfstate.*
+.terraform/
+cdk.out/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Evidence is intentionally tracked (portfolio). Only ignore huge local junk.
+labs/**/evidence/*.log
+labs/**/evidence/tmp/
+
+# Local lab telemetry
+progress/events.jsonl
+
+# Live session state
+progress/session.md

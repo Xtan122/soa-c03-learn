@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lab 11 - small stack for update/rollback/drift practice.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: soa-c03
+  ExpiryDate:
+    Type: String
+    Default: "2026-12-01"
+
+Resources:
+  LabQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-lab11-queue"
+      MessageRetentionPeriod: 3600
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  LabBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub "${ProjectName}-lab11-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  QueueUrlParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${ProjectName}/lab11/queue-url"
+      Type: String
+      Value: !Ref LabQueue
+      Tags:
+        Project: !Ref ProjectName
+        ExpiryDate: !Ref ExpiryDate
+
+Outputs:
+  QueueUrl:
+    Value: !Ref LabQueue
+  BucketName:
+    Value: !Ref LabBucket
+  QueueUrlParameterName:
+    Value: !Ref QueueUrlParameter

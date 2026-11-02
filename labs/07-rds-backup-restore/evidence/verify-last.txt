@@ -1,0 +1,2 @@
+verify 2026-10-30T18:35:40Z lab=07
+ OK  restored DB available, lab07 rows=5

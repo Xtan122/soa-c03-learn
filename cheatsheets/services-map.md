@@ -59,7 +59,7 @@
 | PrivateLink | Expose service private |
 
 ## Ngoài phạm vi core lab
-EKS (container) — **có trong SOA-C03** nhưng không dựng trong 6 tuần vì chi phí/cleanup. Chỉ nắm khái niệm.
+EKS (container) — **có trong SOA-C03** nhưng không dựng trong 30 ngày vì chi phí/cleanup. Chỉ nắm khái niệm.
 
 ---
 

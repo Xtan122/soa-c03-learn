@@ -1,0 +1,2 @@
+verify 2026-10-29T18:07:01Z lab=06
+ OK  desired=2 healthy=2 template=1 failedActivities=7

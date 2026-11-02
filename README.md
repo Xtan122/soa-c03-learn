@@ -1,271 +1,219 @@
-# SOA-C03 Lab Hủy Diệt — 6 tuần / 40 labs
+# SOA-C03 CloudOps Lab — 24 labs / 30 ngày
 
-> **CloudOps Engineer thực chiến.** Mục tiêu sau 6 tuần: nhìn một incident AWS và đi theo chuỗi
-> **Detect → Diagnose → Fix → Automate → Prevent**.
+> **Hands-on là mũi nhọn.** Repo này không phải giáo trình đọc. Nó là một lab platform:
+> mỗi lab có fault inject, verify tự động, cleanup, cost guardrail và evidence.
+> Mục tiêu: ngày thi, tay đã chạm đủ 24 tình huống vận hành thật.
 
-**Nhịp:** 6 ngày/tuần × ~1.5h/ngày = ~54 giờ · Ngày thứ 7: nghỉ hoặc catch-up.
-**Tỷ lệ:** 70% Console/CLI hands-on · 20% Skill Builder/SBTS · 10% notes.
-Practice exam chỉ bắt đầu mạnh từ **tuần 5–6**.
+**Phạm vi an toàn:** track này **không** dùng multi-account/landing zone (OU, SCP, Control Tower,
+IAM Identity Center). Các dịch vụ đó có thể ảnh hưởng điều kiện credit/account; phần
+lý thuyết chỉ đọc trong exam guide. Track gồm **24 lab**.
 
----
+**Deadline cứng**
 
-## 🎛️ Dashboard tiến độ (tick khi xong từng lab)
-
-> Đếm số `[x]` để biết tiến độ. Mỗi lab có checklist phase riêng trong file tuần.
-
-### Week 1 — Monitoring & Logging → `week1-monitoring.md`
-- [x] LAB 01 — CloudWatch Fundamentals
-- [x] LAB 02 — CloudWatch Alarm
-- [x] LAB 03 — CloudWatch Logs
-- [x] LAB 04 — Metric Filter
-- [ ] LAB 05 — CloudTrail Investigation
-- [ ] LAB 06 — EventBridge
-- [ ] LAB 07 — Monitoring Capstone
-
-### Week 2 — Reliability & Recovery → `week2-reliability.md`
-- [ ] LAB 08 — EC2 Status Check Incident
-- [ ] LAB 09 — ALB Health Check
-- [ ] LAB 10 — Auto Scaling
-- [ ] LAB 11 — Auto Scaling Failure
-- [ ] LAB 12 — RDS Backup & Restore
-- [ ] LAB 13 — RDS Multi-AZ
-- [ ] LAB 14 — Disaster Recovery Drill
-
-### Week 3 — Deployment & Automation → `week3-automation.md`
-- [ ] LAB 15 — Systems Manager Session Manager
-- [ ] LAB 16 — Systems Manager Run Command
-- [ ] LAB 17 — Parameter Store
-- [ ] LAB 18 — Secrets Manager
-- [ ] LAB 19 — CloudFormation
-- [ ] LAB 20 — StackSets
-- [ ] LAB 21 — Event-Driven Remediation
-
-### Week 4 — Security & Networking Operations → `week4-security-networking.md`
-- [ ] LAB 22 — IAM Troubleshooting
-- [ ] LAB 23 — STS AssumeRole
-- [ ] LAB 24 — KMS Troubleshooting
-- [ ] LAB 25 — S3 Security Incident
-- [ ] LAB 26 — VPC Troubleshooting
-- [ ] LAB 27 — VPC Endpoint
-- [ ] LAB 28 — Networking Boss Fight
-
-### Week 5 — Troubleshooting / Incident Response → `week5-incident-response.md`
-- [ ] LAB 29 — EC2 CPU Incident
-- [ ] LAB 30 — EC2 Unreachable
-- [ ] LAB 31 — ALB 503
-- [ ] LAB 32 — RDS Connection Failure
-- [ ] LAB 33 — IAM AccessDenied
-- [ ] LAB 34 — CloudTrail Forensics
-
-### Week 6 — Full CloudOps Simulation → `week6-simulation.md`
-- [ ] LAB 35 — Production Architecture Build
-- [ ] LAB 36 — Production Monitoring
-- [ ] LAB 37 — Production Incident #1
-- [ ] LAB 38 — Production Incident #2
-- [ ] LAB 39 — Production Incident #3
-- [ ] LAB 40 — THE FINAL BOSS
+| Việc | Ngày |
+|---|---|
+| Track 30 ngày | **2026-10-24 → 2026-11-22** |
+| Buffer luyện đề | 2026-11-23 → 2026-11-30 |
+| **Xoá toàn bộ tài nguyên** | **2026-12-01** |
+| Credit hết hạn | 2026-12-03 |
 
 ---
 
-## 🗺️ Tổng quan
+## Quickstart
 
-| Tuần | Chủ đề | Labs |
-|---|---|---:|
-| Week 1 | Monitoring & Logging | 7 |
-| Week 2 | Reliability & Recovery | 7 |
-| Week 3 | Deployment & Automation | 7 |
-| Week 4 | Security & Networking Operations | 7 |
-| Week 5 | Troubleshooting / Incident Response | 6 |
-| Week 6 | Full CloudOps Simulation | 6 |
-| **Tổng** | | **40** |
+> **Mỗi buổi lab:** mở `START-HERE.md` và nói với AI:
+> `Đọc START-HERE.md và bắt đầu buổi lab hôm nay.`
+> Đây là file entrypoint duy nhất; không cần dán toàn bộ rule vào chat.
 
----
-
-## 📅 Lịch 6 tuần
-
-| Ngày | Lab | ✔ |
-|---|---|---|
-| **W1-D1** | 01 CloudWatch | [ ] |
-| W1-D2 | 02 Alarm | [ ] |
-| W1-D3 | 03 Logs | [x] |
-| W1-D4 | 04 Metric Filter | [x] |
-| W1-D5 | 05 CloudTrail | [ ] |
-| W1-D6 | 06 EventBridge | [ ] |
-| W1-D7 | nghỉ |  |
-| **W2-D1** | 08 EC2 Status | [ ] |
-| W2-D2 | 09 ALB | [ ] |
-| W2-D3 | 10 ASG | [ ] |
-| W2-D4 | 11 ASG Failure | [ ] |
-| W2-D5 | 12 RDS Backup | [ ] |
-| W2-D6 | 13 RDS Multi-AZ + 14 DR | [ ] |
-| W2-D7 | nghỉ |  |
-| **W3-D1** | 15 SSM | [ ] |
-| W3-D2 | 16 Run Command | [ ] |
-| W3-D3 | 17 Parameter Store | [ ] |
-| W3-D4 | 18 Secrets Manager | [ ] |
-| W3-D5 | 19 CloudFormation | [ ] |
-| W3-D6 | 20 StackSets + 21 Event Remediation | [ ] |
-| W3-D7 | nghỉ |  |
-| **W4-D1** | 22 IAM | [ ] |
-| W4-D2 | 23 STS | [ ] |
-| W4-D3 | 24 KMS | [ ] |
-| W4-D4 | 25 S3 Security | [ ] |
-| W4-D5 | 26 VPC | [ ] |
-| W4-D6 | 27 Endpoint + 28 Networking Boss | [ ] |
-| W4-D7 | nghỉ |  |
-| **W5-D1** | 29 CPU Incident | [ ] |
-| W5-D2 | 30 EC2 unreachable | [ ] |
-| W5-D3 | 31 ALB 503 | [ ] |
-| W5-D4 | 32 RDS failure | [ ] |
-| W5-D5 | 33 IAM AccessDenied | [ ] |
-| W5-D6 | 34 CloudTrail Forensics | [ ] |
-| W5-D7 | nghỉ |  |
-| **W6-D1** | 35 Architecture | [ ] |
-| W6-D2 | 36 Monitoring | [ ] |
-| W6-D3 | 37 Incident #1 | [ ] |
-| W6-D4 | 38 Incident #2 | [ ] |
-| W6-D5 | 39 Incident #3 | [ ] |
-| W6-D6 | **40 Final Boss** | [ ] |
-| W6-D7 | Practice exam | [ ] |
-
----
-
-## ⏱️ Template 1.5h/ngày
-
-```text
-10 min | Skill Builder / đọc concept
-50 min | Build lab
-20 min | Break + troubleshoot
-10 min | Note
+```bash
+# 0. Cần: AWS CLI v2, jq, curl, python3, quyền vào account lab
+make init                 # tạo .env, điền account/region
+$EDITOR .env              # ALERT_EMAIL, kiểm tra EXPIRY_DATE=2026-12-01
+make doctor               # pre-flight
+make bootstrap            # budget + core stack + upload app artifacts (~3')
+./bin/lab list            # 24 lab
+./bin/lab up 00           # lab đầu tiên: verify baseline
+./bin/lab preflight 05    # trước mỗi lab: static (thêm --live để read-only AWS)
+./bin/lab brief 03        # trước break: khái niệm + baseline + bản đồ + 3 câu hỏi
+./bin/lab console 05      # xem đúng đường bấm console của lab
+make app-up               # trước các lab cần app (01,02,04–10,12,15,17–23); ~8-12 phút
 ```
 
-**Đừng dành 60–90 phút xem video.**
+`./bin/lab up <id>` sẽ báo nếu thiếu app stack. Hết buổi nhớ `make app-down`.
 
----
+Mỗi lab:
 
-## 🔥 Luật của Lab Hủy Diệt
-
-Không làm lab theo kiểu copy tutorial. Mỗi lab phải có 4 phases:
-
-### Phase A — Build
-```text
-Dựng infrastructure
-```
-### Phase B — Break
-```text
-Cố tình phá
-```
-### Phase C — Diagnose
-Không xem solution. Chỉ dùng:
-```text
-CloudWatch
-CloudTrail
-AWS Console
-AWS CLI
-SSM
-Logs
-```
-### Phase D — Fix
-```text
-Verify → Document → Cleanup
+```bash
+./bin/lab up 05
+ALLOW_BREAK=yes ./bin/lab break 05
+# ... tự chẩn đoán, không đọc scripts/lib/labs.sh ...
+./bin/lab verify 05
+./bin/lab note 05
+./bin/lab down 05
+make app-down             # hết buổi thì tắt app stack
+make cost
 ```
 
 ---
 
-## 📒 Note sau mỗi lab (5 dòng)
+## Vì sao repo này khác
 
-Xem `templates/lab-note.md`.
+| Thường thấy | Repo này |
+|---|---|
+| 40 file README, không có gì chạy được | 24 lab có `up/break/verify/down` thật |
+| "Hãy tạo EC2 rồi xem metric" | App stack + fault catalog + tiêu chí PASS |
+| Không có cleanup | `cleanup-all.sh` xoá theo tag + stack, kiểm tra versioned S3/EIP/NAT/RDS |
+| Hướng dẫn console chung chung | Mỗi lab có mục **5c**: service → menu → tab → nút, link nhanh, ô cần đọc |
+| Phá xong bắt diagnose khi còn mù | Mỗi lab có **5d. Brief**: inventory, baseline, bản đồ, 3 câu dự đoán trước `break` |
+| `up` lần 2 dễ fail | Static preflight + build idempotent cho canary/snapshot/endpoint/backup |
+| Học xong không có bằng chứng | `evidence/note.md`, `verify-last.txt`, `DONE` |
+| Không kiểm soát chi phí | core/app tách rời, budget, `make cost`, deadline 01/12 |
+| Lab nào cũng giống lab nào | 5 incident drills + final boss 5 faults |
+
+### Kiến trúc
 
 ```text
-LAB:
-SERVICE:
-
-1. What did I build?
-2. What failed?
-3. How did I detect it?
-4. How did I fix it?
-5. What exam trap did I learn?
+core stack (chạy 24/7, ~$1-2/tháng)          app stack (bật theo buổi, ~$0.4/3h)
+┌──────────────────────────────┐             ┌──────────────────────────────┐
+│ VPC 10.42/16                 │             │ Internet → ALB :80           │
+│ public + private subnets     │  exports    │            ↓                 │
+│ S3 (versioned, SSE-KMS)      │ ──────────> │      ASG t4g.micro :8080     │
+│ KMS, CloudTrail, SNS         │             │            ↓                 │
+│ IAM roles, SSM parameters    │             │      RDS PostgreSQL          │
+└──────────────────────────────┘             │ alarms + EventBridge         │
+                                             └──────────────────────────────┘
 ```
 
-Ví dụ:
-```text
-LAB: VPC Troubleshooting
+Chi tiết: [`docs/architecture.md`](docs/architecture.md)
 
-1. Private EC2 → NAT → Internet
-2. Route table missing 0.0.0.0/0
-3. Checked route table + connectivity
-4. Added route to NAT
-5. SG allows traffic ≠ route exists
+---
+
+## 24 lab
+
+| # | Lab | Domain | Thời gian |
+|---:|---|---|---:|
+| 00 | [Bootstrap: account, budget, core, guardrails](labs/00-bootstrap/README.md) | Foundation | 90' |
+| 01 | [CloudWatch metrics, dashboard, alarm, SNS](labs/01-cloudwatch-metrics-alarm/README.md) | D1 | 150' |
+| 02 | [CloudWatch Logs, Agent, Insights, metric filter](labs/02-cloudwatch-logs-insights/README.md) | D1 | 150' |
+| 03 | [CloudTrail + EventBridge: ai terminate EC2?](labs/03-cloudtrail-eventbridge/README.md) | D1 | 150' |
+| 04 | [Monitoring capstone: 500 → alarm → event](labs/04-monitoring-capstone/README.md) | D1 | 180' |
+| 05 | [ALB health check → 503](labs/05-alb-health-503/README.md) | D2 | 120' |
+| 06 | [ASG scale-out thất bại](labs/06-asg-scaling-failure/README.md) | D2 | 150' |
+| 07 | [RDS snapshot, restore, verify dữ liệu](labs/07-rds-backup-restore/README.md) | D2 | 180' |
+| 08 | [RDS Multi-AZ + failover + RTO](labs/08-rds-multiaz-dr/README.md) | D2 | 150' |
+| 09 | [SSM Session Manager, Run Command, Parameter Store](labs/09-ssm-operations/README.md) | D3 | 120' |
+| 10 | [Secrets Manager + KMS AccessDenied](labs/10-secrets-kms/README.md) | D4 | 150' |
+| 11 | [CloudFormation rollback + drift + CDK](labs/11-cloudformation-cdk/README.md) | D3 | 150' |
+| 12 | [Event-driven remediation: EC2 stopped → Lambda](labs/12-event-remediation/README.md) | D3 | 150' |
+| 13 | [IAM + STS AssumeRole](labs/13-iam-sts/README.md) | D4 | 120' |
+| 14 | [S3 public exposure: detect, contain, fix](labs/14-s3-security/README.md) | D4 | 150' |
+| 15 | [VPC: SG, NACL, route, Flow Logs, Reachability](labs/15-vpc-troubleshooting/README.md) | D5 | 150' |
+| 16 | [Private subnet → S3 endpoint + SSM endpoint](labs/16-vpc-endpoint/README.md) | D5 | 180' |
+| 17 | [Networking boss: 3 lỗi cùng lúc](labs/17-networking-boss/README.md) | D5 | 180' |
+| 18 | [ECS Fargate + Container Insights + ECR](labs/18-ecs-fargate/README.md) | D3 | 180' |
+| 19 | [AWS Backup, Config, Cost Explorer, Budgets](labs/19-backup-config-cost/README.md) | D2/D3 | 180' |
+| 20 | [Incident: CPU 95% + 5xx + ALB](labs/20-incident-compute-network/README.md) | D1/D2/D5 | 180' |
+| 21 | [Incident: DB timeout + AccessDenied](labs/21-incident-data-identity/README.md) | D2/D4 | 180' |
+| 22 | [Production capstone: self-healing + backup](labs/22-production-capstone/README.md) | All | 240' |
+| 23 | [Final boss: 5 faults](labs/23-final-boss/README.md) | All | 240' |
+
+Lịch chi tiết: [`PLAN-30-DAYS.md`](PLAN-30-DAYS.md) · Map domain: [`docs/exam-map.md`](docs/exam-map.md)
+· CLI theo service: [`cheatsheets/aws-cli-soa-c03.md`](cheatsheets/aws-cli-soa-c03.md)
+· Khi lỗi: [`docs/troubleshooting.md`](docs/troubleshooting.md)
+
+---
+
+## Luật chơi
+
+1. **Không đọc `scripts/lib/labs.sh` trước khi thử 3 giả thuyết.** Đó là answer key.
+2. **Không xoá stack để "fix".** Fix đúng lớp đang hỏng.
+3. **Không bỏ verify.** `./bin/lab verify` là định nghĩa của "xong".
+4. **Không để `ALLOW_BREAK=yes`** sau khi xong.
+5. **Không để app stack qua đêm.**
+6. Mỗi lab phải có `evidence/note.md` với root cause + evidence thật.
+
+Chi tiết: [`docs/lab-contract.md`](docs/lab-contract.md)
+· Mentor playbook: [`docs/mentor-playbook.md`](docs/mentor-playbook.md)
+· Beginner mentor: [`docs/beginner-mentor.md`](docs/beginner-mentor.md)
+· Console guide: [`docs/console-guide.md`](docs/console-guide.md)
+· AI mentor runbook: [`docs/ai-mentor-runbook.md`](docs/ai-mentor-runbook.md)
+· Learner quickstart: [`docs/learner-quickstart.md`](docs/learner-quickstart.md)
+· Glossary: [`docs/glossary.md`](docs/glossary.md)
+· Lab readiness: [`docs/lab-readiness.md`](docs/lab-readiness.md)
+· AI rules: [`AGENTS.md`](AGENTS.md) + [`docs/ai-rules.md`](docs/ai-rules.md)
+· Audit gần nhất: [`docs/audit-report.md`](docs/audit-report.md)
+· Audit từng lab: [`docs/lab-audit.md`](docs/lab-audit.md)
+
+---
+
+## Chi phí
+
+- Core stack: ~**$1–2/tháng**.
+- App stack 3 giờ: ~**$0.30–0.45**.
+- Cả 24 lab nếu dọn đúng: ~**$10–25**.
+- Bỏ quên app stack 24/7: ~**$70–75/tháng** (không NAT); ~**$115/tháng** nếu bật NAT.
+- **Không dùng EKS control plane** (~$73/tháng); dùng ECS Fargate hoặc lab free.
+
+Chi tiết + bảng giá: [`docs/cost-guardrails.md`](docs/cost-guardrails.md)
+
+---
+
+## Commands
+
+```bash
+make init            # tạo .env
+make doctor          # kiểm tra credentials, budget, stack, app, expiry
+make bootstrap       # budget + core stack + upload artifacts
+make app-up          # ALB + ASG + RDS (on demand)
+make app-down        # tắt meter
+make status          # stack, URL, target health, alarms, SSM
+make cost            # spend + resource đang chạy
+make inventory       # mọi resource tagged Project=soa-c03
+make upload          # upload app artifacts
+make dash            # tạo/refresh dashboard
+make cleanup         # CONFIRM_DESTROY=yes make cleanup
+make test            # bash -n, py_compile, cfn-lint (nếu có)
+
+./bin/lab list
+./bin/lab up 05
+ALLOW_BREAK=yes ./bin/lab break 05
+./bin/lab hint 05
+./bin/lab verify 05
+./bin/lab reset 05
+./bin/lab down 05
+./bin/lab note 05
+./bin/lab progress
 ```
 
 ---
 
-## 💰 Cost control
+## Requirements
 
-### Có thể dùng thường xuyên
-EC2 nhỏ · S3 · Lambda · CloudWatch · CloudTrail · EventBridge · IAM · SSM · DynamoDB · SNS · SQS
-
-### Chỉ bật trong lúc lab rồi xóa
-RDS · ALB · ASG · NAT Gateway · CloudFront · Route 53 · VPC Endpoint có phí · KMS usage nếu không cần
-
-### Không đưa vào core lab
-**EKS.** SOA không yêu cầu dựng EKS để chứng minh CloudOps skill, chi phí và cleanup không đáng với mục tiêu 6 tuần.
+- AWS CLI v2, `jq`, `curl`, `python3` (3.9+), `zip` (hoặc Python zipfile).
+- Quyền: CloudFormation, EC2, VPC, IAM, S3, KMS, RDS, ELBv2, ASG, CloudWatch, Logs,
+  CloudTrail, SNS, SQS, Lambda, Events, SSM, Secrets Manager, ECS, ECR, Backup, Config,
+  Budgets, Cost Explorer.
+- Region mặc định: `ap-southeast-1`.
+- Account **paid plan** (bạn đang có), credit hết hạn 2026-12-03.
 
 ---
 
-## 🎯 Dùng Skill Builder thế nào?
+## Trạng thái
 
-Không học từ A → Z. Mỗi tuần:
-```text
-AWS Skill Builder → Domain tương ứng → Learning content → Builder Lab
-      → Tự rebuild lại → Break it → Troubleshoot
-```
-Tận dụng **Builder Labs/SBTS** đã có. Nguồn tham chiếu đã gắn ở từng lab và tổng hợp tại `sources/source-index.md`.
-
----
-
-## 🧨 Một thay đổi đặc biệt khuyên dùng
-
-**Đừng học 40 lab này như 40 bài độc lập.** Xây một **AWS Operations Sandbox** từ Week 1 rồi liên tục nâng cấp:
-
-```text
-                  ┌──────── CloudTrail
-                  │
-Internet → ALB → ASG → EC2
-             │      │
-             │      ├── CloudWatch
-             │      └── SSM
-             │
-             └────→ RDS
-
-S3 ←──── IAM / KMS
- │
- └──── EventBridge → Lambda → SNS
-```
-
-Đến Week 6, toàn bộ hệ thống này trở thành **production-like playground** để cố tình phá.
-
-Đó là cách học SOA-C03: **không học thuộc "dịch vụ X dùng để làm gì", mà luyện phản xạ "hệ thống X đang chết, tôi phải nhìn đâu trước?"**
+- 24 lab đã scaffold + fault/verify/cleanup.
+- 24 README lab được viết lại cho người mới: mục tiêu, hiện trạng, kiến trúc, triệu chứng,
+  nơi chẩn đoán, tiêu chí đúng, exam takeaway, note, cleanup.
+- CloudFormation đã pass `cfn-lint` và `aws cloudformation validate-template` (chưa deploy
+  vào account của bạn — lần đầu chạy `make bootstrap` là lần test thật).
+- Notes CloudWatch/CloudTrail cũ được giữ trong [`notes/`](notes/) để tham khảo;
+  evidence của track mới nằm trong `labs/<id>/evidence/`.
 
 ---
 
-## 📂 Cấu trúc repo
+## Nguồn
 
-```text
-soa-c03/
-├── README.md                    # file này
-├── week1-monitoring.md          # LAB 01–07
-├── week2-reliability.md         # LAB 08–14
-├── week3-automation.md          # LAB 15–21
-├── week4-security-networking.md # LAB 22–28
-├── week5-incident-response.md   # LAB 29–34
-├── week6-simulation.md          # LAB 35–40
-├── cheatsheets/
-│   ├── incident-triage.md
-│   └── services-map.md
-├── templates/lab-note.md
-└── sources/source-index.md
-```
-
-> **Ghi chú nguồn:** Nguồn SBTS là tên khóa/lab + link catalog public để bạn search trong tài khoản.
-> Nội dung sau đăng nhập (Builder Lab/SimuLearn gated) không deep-link được. Nguồn `docs.aws.amazon.com` ổn định nhất.
+- [SOA-C03 exam guide](https://docs.aws.amazon.com/aws-certification/latest/sysops-administrator-associate-03/sysops-administrator-associate-03.html)
+- [In-scope services](https://docs.aws.amazon.com/aws-certification/latest/sysops-administrator-associate-03/soa-03-in-scope-services.md)
+- [Exam overview](https://aws.amazon.com/certification/certified-cloudops-engineer-associate/)
+- [AWS Free Tier FAQ](https://aws.amazon.com/free/free-tier-faqs/)
+- [VPC pricing](https://aws.amazon.com/vpc/pricing/) · [ELB pricing](https://aws.amazon.com/elasticloadbalancing/pricing/)

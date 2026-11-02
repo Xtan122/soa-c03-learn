@@ -1,0 +1,17 @@
+[Unit]
+Description=CloudOps lab application
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/cloudops.env
+ExecStart=/opt/cloudops/venv/bin/python /opt/cloudops/app.py
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

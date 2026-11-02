@@ -1,0 +1,2 @@
+verify 2026-10-24T15:36:50Z lab=00
+[32m OK [0m core baseline verified

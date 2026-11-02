@@ -1,0 +1,2 @@
+verify 2026-10-26T18:36:11Z lab=04
+[32m OK [0m metric=14 alarm=ALARM event=delivered

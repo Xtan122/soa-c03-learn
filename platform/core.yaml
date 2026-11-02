@@ -1,0 +1,645 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SOA-C03 lab core: VPC, subnets, S3, KMS, CloudTrail, SNS, IAM, SSM parameters.
+  Persistent and cheap (~USD 1-2/month). The expensive app stack is separate.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: soa-c03
+    AllowedPattern: "^[a-z0-9-]+$"
+    Description: Lowercase prefix used for names, tags and SSM parameters.
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: Optional. SNS email subscription must be confirmed once.
+  ExpiryDate:
+    Type: String
+    Default: "2026-12-01"
+    Description: Hard cleanup deadline, copied to every tag.
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 30
+  EnableFlowLogs:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: VPC Flow Logs cost money. Enable only for Lab 15/17.
+  EnableNat:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      NAT Gateway costs ~USD 32/month. Keep false and use VPC endpoints.
+      Set true only for a short egress lab, then set back to false.
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  FlowLogsEnabled: !Equals [!Ref EnableFlowLogs, "true"]
+  NatEnabled: !Equals [!Ref EnableNat, "true"]
+
+Resources:
+  # ---------------------------------------------------------------- network
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-vpc"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: Lab, Value: soa-c03}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-igw"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: 10.42.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-public-1"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: Tier, Value: public}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: 10.42.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-public-2"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: Tier, Value: public}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: 10.42.10.0/24
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-private-1"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: Tier, Value: private}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: 10.42.11.0/24
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-private-2"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: Tier, Value: private}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-public-rt"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-private-rt-1"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-private-rt-2"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable2
+
+  # NAT is optional. Labs that need egress should use a VPC endpoint instead.
+  NatEip:
+    Type: AWS::EC2::EIP
+    Condition: NatEnabled
+    Properties:
+      Domain: vpc
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-nat-eip"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Condition: NatEnabled
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - {Key: Name, Value: !Sub "${ProjectName}-nat"}
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  PrivateDefaultRoute1:
+    Type: AWS::EC2::Route
+    Condition: NatEnabled
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateDefaultRoute2:
+    Type: AWS::EC2::Route
+    Condition: NatEnabled
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  # --------------------------------------------------------------- storage
+  LabKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "${ProjectName} lab key"
+      EnableKeyRotation: true
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableRoot
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          - Sid: AllowCloudTrail
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action:
+              - kms:GenerateDataKey*
+              - kms:Decrypt
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub "arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${ProjectName}-trail"
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  LabKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${ProjectName}-lab"
+      TargetKeyId: !Ref LabKey
+
+  DataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${AWS::AccountId}-${AWS::Region}-data"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt LabKey.Arn
+            BucketKeyEnabled: true
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: Lab, Value: soa-c03}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  DataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DataBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt DataBucket.Arn
+              - !Sub "${DataBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: CloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt DataBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub "arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${ProjectName}-trail"
+          - Sid: CloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub "${DataBucket.Arn}/cloudtrail/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                aws:SourceArn: !Sub "arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${ProjectName}-trail"
+
+  # --------------------------------------------------------------- logging
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/cloudops/${ProjectName}/app"
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: FlowLogsEnabled
+    Properties:
+      LogGroupName: !Sub "/aws/vpc/${ProjectName}/flow"
+      RetentionInDays: 3
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Condition: FlowLogsEnabled
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: flow-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub "${FlowLogGroup.Arn}:*"
+
+  VpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Condition: FlowLogsEnabled
+    Properties:
+      ResourceId: !Ref Vpc
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogDestination: !GetAtt FlowLogGroup.Arn
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  Trail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: DataBucketPolicy
+    Properties:
+      TrailName: !Sub "${ProjectName}-trail"
+      S3BucketName: !Ref DataBucket
+      S3KeyPrefix: cloudtrail
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: true
+      IsLogging: true
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  # ------------------------------------------------------------------ sns
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-alerts"
+      DisplayName: SOA-C03 lab alerts
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref AlertTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowAccount
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+          - Sid: AllowEventBridge
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+          - Sid: AllowCloudWatch
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # ------------------------------------------------------------------ iam
+  AppInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-app-instance"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: app-runtime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource: !GetAtt DataBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub "${DataBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/*"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds!*"
+                  - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ProjectName}/*"
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt LabKey.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !Sub "${AppLogGroup.Arn}:*"
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${ProjectName}-app-instance"
+      Roles: [!Ref AppInstanceRole]
+
+  LambdaRemediationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-lambda-remediation"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: remediate
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeTags
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                Resource: "*"
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref AlertTopic
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  # Used by Lab 03 / 34 so CloudTrail shows an AssumedRole actor.
+  LabOperatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-lab-operator"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: lab-operator
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:RunInstances
+                  - ec2:TerminateInstances
+                  - ec2:StopInstances
+                  - ec2:StartInstances
+                  - ec2:DescribeInstances
+                  - ec2:CreateTags
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !GetAtt DataBucket.Arn
+                  - !Sub "${DataBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - cloudtrail:LookupEvents
+                  - logs:FilterLogEvents
+                Resource: "*"
+      Tags:
+        - {Key: Project, Value: !Ref ProjectName}
+        - {Key: ExpiryDate, Value: !Ref ExpiryDate}
+
+  # ------------------------------------------------------------------ ssm
+  AppPortParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${ProjectName}/app/port"
+      Type: String
+      Value: "8080"
+      Description: Application port used by the lab app.
+      Tags:
+        Project: !Ref ProjectName
+        ExpiryDate: !Ref ExpiryDate
+
+  AppHealthPathParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${ProjectName}/app/health-path"
+      Type: String
+      Value: "/health"
+      Description: ALB target group health check path.
+      Tags:
+        Project: !Ref ProjectName
+        ExpiryDate: !Ref ExpiryDate
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+    Export: {Name: !Sub "${ProjectName}-VpcId"}
+  PublicSubnets:
+    Value: !Join [",", [!Ref PublicSubnet1, !Ref PublicSubnet2]]
+    Export: {Name: !Sub "${ProjectName}-PublicSubnets"}
+  PrivateSubnets:
+    Value: !Join [",", [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+    Export: {Name: !Sub "${ProjectName}-PrivateSubnets"}
+  PublicSubnet1:
+    Value: !Ref PublicSubnet1
+    Export: {Name: !Sub "${ProjectName}-PublicSubnet1"}
+  PrivateSubnet1:
+    Value: !Ref PrivateSubnet1
+    Export: {Name: !Sub "${ProjectName}-PrivateSubnet1"}
+  DataBucketName:
+    Value: !Ref DataBucket
+    Export: {Name: !Sub "${ProjectName}-DataBucketName"}
+  DataBucketArn:
+    Value: !GetAtt DataBucket.Arn
+    Export: {Name: !Sub "${ProjectName}-DataBucketArn"}
+  KmsKeyArn:
+    Value: !GetAtt LabKey.Arn
+    Export: {Name: !Sub "${ProjectName}-KmsKeyArn"}
+  KmsKeyId:
+    Value: !Ref LabKey
+    Export: {Name: !Sub "${ProjectName}-KmsKeyId"}
+  AlertTopicArn:
+    Value: !Ref AlertTopic
+    Export: {Name: !Sub "${ProjectName}-AlertTopicArn"}
+  AppLogGroupName:
+    Value: !Ref AppLogGroup
+    Export: {Name: !Sub "${ProjectName}-AppLogGroupName"}
+  AppInstanceProfileName:
+    Value: !Ref AppInstanceProfile
+    Export: {Name: !Sub "${ProjectName}-AppInstanceProfileName"}
+  AppInstanceRoleName:
+    Value: !Ref AppInstanceRole
+    Export: {Name: !Sub "${ProjectName}-AppInstanceRoleName"}
+  LabOperatorRoleArn:
+    Value: !GetAtt LabOperatorRole.Arn
+    Export: {Name: !Sub "${ProjectName}-LabOperatorRoleArn"}
+  LambdaRemediationRoleArn:
+    Value: !GetAtt LambdaRemediationRole.Arn
+    Export: {Name: !Sub "${ProjectName}-LambdaRemediationRoleArn"}
+  TrailName:
+    Value: !Ref Trail
+    Export: {Name: !Sub "${ProjectName}-TrailName"}

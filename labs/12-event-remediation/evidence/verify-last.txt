@@ -1,0 +1,2 @@
+verify 2026-11-02T09:12:52Z lab=12
+ OK  canary=running lambda=started event=delivered

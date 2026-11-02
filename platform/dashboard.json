@@ -1,0 +1,89 @@
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "x": 0, "y": 0, "width": 12, "height": 6,
+      "properties": {
+        "title": "ALB - requests, 5xx, latency",
+        "region": "__REGION__",
+        "view": "timeSeries",
+        "stacked": false,
+        "period": 60,
+        "metrics": [
+          ["AWS/ApplicationELB", "RequestCount", "LoadBalancer", "__ALB__", {"stat": "Sum", "label": "Requests"}],
+          [".", "HTTPCode_ELB_5XX_Count", ".", ".", {"stat": "Sum", "label": "ALB 5xx"}],
+          [".", "HTTPCode_Target_5XX_Count", ".", ".", {"stat": "Sum", "label": "Target 5xx"}],
+          [".", "TargetResponseTime", ".", ".", {"stat": "Average", "label": "Latency avg", "yAxis": "right"}]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12, "y": 0, "width": 12, "height": 6,
+      "properties": {
+        "title": "ALB - healthy / unhealthy targets",
+        "region": "__REGION__",
+        "view": "timeSeries",
+        "period": 60,
+        "metrics": [
+          ["AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", "__TG__", "LoadBalancer", "__ALB__", {"stat": "Average", "label": "Healthy"}],
+          [".", "UnHealthyHostCount", ".", ".", ".", ".", {"stat": "Average", "label": "Unhealthy"}]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0, "y": 6, "width": 12, "height": 6,
+      "properties": {
+        "title": "ASG - CPU and network",
+        "region": "__REGION__",
+        "view": "timeSeries",
+        "period": 60,
+        "metrics": [
+          ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "__ASG__", {"stat": "Average", "label": "CPU %"}],
+          [".", "NetworkIn", ".", ".", {"stat": "Sum", "label": "Network in", "yAxis": "right"}],
+          [".", "NetworkOut", ".", ".", {"stat": "Sum", "label": "Network out", "yAxis": "right"}]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12, "y": 6, "width": 12, "height": 6,
+      "properties": {
+        "title": "RDS - CPU, connections, free storage",
+        "region": "__REGION__",
+        "view": "timeSeries",
+        "period": 60,
+        "metrics": [
+          ["AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", "__DB__", {"stat": "Average", "label": "CPU %"}],
+          [".", "DatabaseConnections", ".", ".", {"stat": "Average", "label": "Connections", "yAxis": "right"}],
+          [".", "FreeStorageSpace", ".", ".", {"stat": "Average", "label": "Free storage", "yAxis": "right"}]
+        ]
+      }
+    },
+    {
+      "type": "log",
+      "x": 0, "y": 12, "width": 24, "height": 6,
+      "properties": {
+        "title": "Application ERROR logs (Logs Insights)",
+        "region": "__REGION__",
+        "query": "SOURCE '__LOG_GROUP__' | fields @timestamp, level, event, message, instance_id | filter level = 'ERROR' | sort @timestamp desc | limit 20",
+        "view": "table"
+      }
+    },
+    {
+      "type": "alarm",
+      "x": 0, "y": 18, "width": 24, "height": 3,
+      "properties": {
+        "title": "Alarms - ALB 5xx, unhealthy targets, ASG CPU, RDS",
+        "alarms": [
+          "arn:aws:cloudwatch:__REGION__:__ACCOUNT__:alarm:__PREFIX__-alb-5xx",
+          "arn:aws:cloudwatch:__REGION__:__ACCOUNT__:alarm:__PREFIX__-unhealthy-hosts",
+          "arn:aws:cloudwatch:__REGION__:__ACCOUNT__:alarm:__PREFIX__-asg-cpu",
+          "arn:aws:cloudwatch:__REGION__:__ACCOUNT__:alarm:__PREFIX__-rds-cpu",
+          "arn:aws:cloudwatch:__REGION__:__ACCOUNT__:alarm:__PREFIX__-rds-free-storage"
+        ]
+      }
+    }
+  ]
+}

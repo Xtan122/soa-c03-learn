@@ -38,4 +38,4 @@ PHASES: Build [x] Break [x] Diagnose [x] Fix [x] Verify [x] Cleanup [x]
    - Một metric filter áp dụng cho **toàn bộ log group**, không theo từng stream.
 
 ---
-⬅️ [Week 1](../week1-monitoring.md) · [README](../README.md)
+⬅️ [README](../README.md) · [Exam map](../docs/exam-map.md)

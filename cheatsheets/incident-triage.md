@@ -56,7 +56,6 @@ AccessDenied?
  ├─ Identity policy (IAM) cho phép action + resource?
  ├─ Resource policy (bucket/key/queue) cho phép principal?
  ├─ KMS key policy (nếu encrypted)?
- ├─ SCP (Organizations) chặn?
  ├─ Permission boundary chặn?
  └─ Explicit Deny ở đâu đó luôn thắng Allow.
 ```

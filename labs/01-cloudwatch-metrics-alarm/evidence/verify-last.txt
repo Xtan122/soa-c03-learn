@@ -1,0 +1,2 @@
+verify 2026-10-24T18:29:19Z lab=01
+[32m OK [0m CPU max=99.6333 alarm=ALARM
