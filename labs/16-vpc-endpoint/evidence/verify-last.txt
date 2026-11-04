@@ -1,0 +1,3 @@
+verify 2026-11-03T17:21:23Z lab=16
+/home/thanh/Documents/repo-github/soa-c03-learn/var/lab16.env: line 5: vpce-0c5a70631da656af4: command not found
+ OK  S3 gateway endpoint=vpce-0f31e589da3f9f3e6, private instance S3 access=OK

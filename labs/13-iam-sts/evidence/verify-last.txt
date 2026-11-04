@@ -1,0 +1,2 @@
+verify 2026-11-03T01:29:21Z lab=13
+ OK  AssumeRole works and role can list S3

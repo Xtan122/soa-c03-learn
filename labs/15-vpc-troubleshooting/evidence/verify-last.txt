@@ -1,0 +1,2 @@
+verify 2026-11-03T09:03:47Z lab=15
+ OK  SG rule present, app=200, reachability=reachable (path nip-0612e4f79491088b6)
