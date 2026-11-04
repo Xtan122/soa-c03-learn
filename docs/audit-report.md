@@ -244,6 +244,208 @@ Note for future cleanup passes: the automated snapshots listed in item 13/14 wer
 2026-10-31 (`describe-db-snapshots --snapshot-type automated` returns empty), so the
 7-day retention assumption holds.
 
+19. **`./bin/lab break 13` was a silent no-op: "fault injected" on a healthy role.**
+    Observed 2026-11-03 01:00:26Z. `lab13_break` rewrote the trust policy to
+    `arn:aws:iam::111122223333:root` (the AWS documentation example account) and
+    never checked the exit code:
+
+    ```text
+    aws: [ERROR] MalformedPolicyDocument … Invalid principal in policy:
+                 "AWS":"arn:aws:iam::111122223333:root"
+    ==> trust policy now points at a different account
+     OK  fault injected.
+    ```
+
+    IAM validates that a trust policy principal exists, so the update was rejected
+    and the role stayed healthy. A learner would have burned the 20-minute blind
+    window on a system with no fault, and `verify 13` would have passed immediately.
+    Two secondary findings while fixing it:
+
+    - A same-account role ARN that does not exist (`role/soa-c03-lab13-decoy`) is
+      also rejected with *Invalid principal*, so "point at another principal" is
+      not injectable in a single-account lab. The fault is now a `Condition`
+      (`Bool aws:MultiFactorAuthPresent = true`), which AWS always accepts and no
+      CLI session satisfies. The denial keeps the generic `AccessDenied …
+      not authorized to perform: sts:AssumeRole` text, so the learner still has to
+      read the trust policy instead of the error string.
+    - IAM trust-policy changes are eventually consistent **in both directions**: a
+      probe `assume-role` still succeeded ~5s after the break and ~13s after the
+      restore. `lab13_break` now waits (`wait_until 60 5`) until the denial is
+      actually observable and fails loudly otherwise. `lab13_reset` keeps no wait,
+      but every caller re-probes after it.
+
+    Related fix, same root cause (hiding a failure): `assume_role_env` piped
+    `aws sts assume-role` straight into `awk`, so a denial produced empty output
+    and still exited 0. `eval "$(assume_role_env …)"` therefore looked successful
+    and `verify 13` reported "unexpected identity" instead of "AssumeRole failed".
+    It now returns non-zero, and all three call sites (`lab03_break`,
+    `lab10_verify`, `lab13_verify`) capture the env first and abort with a clear
+    warning. Checks were strengthened, not relaxed. `make test` passes (24/24);
+    `shellcheck` is still not installed on this machine, so the edit is lint-unverified.
+
+    Affected runs: none. The broken break happened before the 20-minute clock
+    started; the trust policy was verified with `get-role`, `break 13` re-run
+    cleanly, and `verify 13` then failed with `AssumeRole failed (trust policy?)`
+    as intended.
+
+20. **Two more `verify 13` failures, hidden behind item 19's broken break.**
+    Both only became observable once AssumeRole started working again.
+
+    1. **`aws s3 ls s3://<core-bucket>` hangs.** Measured 2026-11-03 01:25Z with
+       the account's own admin credentials: `timeout 60 aws s3 ls s3://…-data`
+       **timed out**, because the bucket holds the whole CloudTrail keyspace and
+       the high-level `s3 ls` pages through it. Same permission, ~1s when asked
+       for one level: `list-objects-v2 --delimiter / --max-keys 5`. Fixed by
+       switching the check; `s3:ListBucket` is still required, so the check is
+       not weakened.
+    2. **The bucket name was read *after* switching to the role.** `lab13_verify`
+       called `$(core_bucket)` inside the `s3api` argument, i.e. after
+       `eval "$env"` had exported the role's credentials. The role only has S3
+       permissions, so `cloudformation describe-stacks` returned `AccessDenied`,
+       `stack_output_required` died inside a command substitution (status
+       discarded) and the check ran with `--bucket ""`
+       (`ParamValidation: Invalid bucket name ""`). Fixed by resolving the bucket
+       **before** assuming the role. `lab10_verify` already had the correct order.
+
+    Lesson worth keeping: a `$(...)` inside an argument cannot abort the caller,
+    and any `core_*` helper called after `eval "$env"` runs as the lab role.
+    `make test` passes (24/24) after both fixes.
+
+21. **`./bin/lab down 14` leaves the IAM Access Analyzer behind.** Observed 2026-11-03
+    02:31Z, right after `down 14` printed `OK lab 14 resources cleaned`:
+
+    ```text
+    aws accessanalyzer list-analyzers → soa-c03-lab14  ACTIVE
+    ```
+
+    Cause: both `lab14_cleanup` and `scripts/cleanup-all.sh` called
+    `delete-analyzer --analyzer-arn …`, but the API takes `--analyzer-name`
+    (`ParamValidation: the following arguments are required: --analyzer-name`).
+    The error was sent to `/dev/null` with `|| true`, so cleanup claimed success
+    while the analyzer stayed `ACTIVE` — the same "swallow the failure" pattern as
+    items 18/19. Fixed:
+
+    - `lab14_cleanup` deletes by name, then re-lists and prints a `warn` if the
+      analyzer is still there, so a future failure is visible.
+    - `cleanup-all.sh` now selects analyzer **names** (not ARNs) and deletes by name.
+
+    The analyzer created during this session was deleted manually and the account
+    re-checked (`list-analyzers` empty, `list-buckets` has no `lab14` bucket).
+    Cost impact: IAM Access Analyzer has no per-analyzer charge verified for this
+    account; `make cost` showed `MTD $0.00`, so no spend was incurred.
+
+22. **`verify 15` could not find its own Reachability Analyzer path — three bugs
+    stacked.** Observed 2026-11-03 15:31–16:03 (+07). `verify 15` failed with
+    `InvalidParameterValue: None is not a valid NetworkInsightsPathId`.
+
+    1. **`create-network-insights-path` printed `None` but created the path.**
+       `up 15` ran while the machine's resolver was flaky, so the CLI printed
+       nothing; `lab15_build` wrote the literal `None` into `var/lab15-path`
+       and then called `create-tags --resources None`, whose error was swallowed
+       by `|| true`. Result: a real, untagged path plus a `var/` file pointing at
+       a non-existent id. Same "swallow the failure" pattern as items 18/19/21.
+    2. **The ASG replaced the instance, so the path targeted a dead ENI.** The
+       fault (SG without 8080) failed the health check; at `08:43:23Z` the ASG
+       terminated `i-08bfc909cb20e6770` and launched `i-0281b45c982e49406`
+       (`ELB system health check failure`). The path still pointed at
+       `eni-0f4c0efdef69e6abb` of the terminated instance, so any analysis would
+       have described a machine that no longer exists.
+    3. **The query returned the wrong JSON level.**
+       `--query NetworkInsightsAnalysisId` prints nothing, because the id is at
+       `NetworkInsightsAnalysis.NetworkInsightsAnalysisId`.
+
+    Fixed in `scripts/lib/labs.sh`:
+    - tags moved into `--tag-specifications` on the create call (one atomic API
+      call, no `create-tags --resources None`);
+    - `lab15_path_id` / `lab15_all_paths` resolve paths by ALB ENI + port 8080
+      and ignore `var/` when the recorded id is not a `nip-…`;
+    - `lab15_ensure_path` re-creates the path when its destination is not the
+      live app ENI (`verify` now works after the ASG replaced the instance);
+    - `lab15_cleanup` deletes every 8080 path and warns if one survives;
+    - the analysis id query was corrected, and a missing id now fails with a
+      clear warning instead of calling the API with `None`;
+    - `info()` was replaced by `warn()` inside `$(...)` because `info()` writes
+      to stdout and corrupted the captured path id.
+
+    Lesson: an `up` that "succeeds" can leave a `var/` file full of `None`, and
+    a lab that fails a health check will have its instance replaced underneath
+    its own analysis path. `make test` passes (24/24) after the fix.
+
+    Two more bugs surfaced on `down 15`:
+
+    4. **`DeleteNetworkInsightsPath` refuses while an analysis exists**
+       (`AnalysisExistsForNetworkInsightsPath: At least one analysis
+       [nia-…] exists for path …`), and `cleanup` also swallowed that error.
+       Fixed: `lab15_delete_paths` deletes the analyses (retrying up to 60s
+       while one is still running) before the path.
+    5. **`describe-network-insights-analyses` only filters on `status`/`path-found`.**
+       `--filters Name=network-insights-path-id,…` returns
+       `InvalidFilter … must be one of [status, path-found]`, so the "list the
+       analyses" step silently came back empty. Fixed by matching
+       `NetworkInsightsAnalyses[?NetworkInsightsPathId=='nip-…']` client-side.
+
+23. **`make app-up` reported failure while CloudFormation completed.** Observed
+    2026-11-03 15:11 (+07):
+
+    ```text
+    Waiting for stack create/update to complete
+    aws: [ERROR]: Could not connect to the endpoint URL:
+      "https://cloudformation.ap-southeast-1.amazonaws.com/"
+    make: *** [Makefile:31: app-up] Error 255
+    ```
+
+    `getent hosts` failed 2 of 3 times for that name while `sts`/`ec2` resolved,
+    i.e. a local resolver flap, not an AWS-side problem. The stack really did
+    create (`CREATE_IN_PROGRESS` `08:11:25Z` → `CREATE_COMPLETE` `08:19:42Z`),
+    so re-running `app-up` on the error would have been wrong. Documented in
+    `docs/troubleshooting.md`: check `describe-stacks` before retrying, and
+    retry the *read* (`describe-stacks`) rather than the *write* (`app-up`).
+
+24. **`break 16` / `verify 16` leaked an answer and wrote a broken `var/` file.**
+    Observed 2026-11-04 00:03 (+07). Two defects in the same lab:
+
+    1. **`break 16` printed the half-answer.** The message was
+       `S3 gateway endpoint deleted; private instance still has SSM via interface
+       endpoints`, i.e. it told the learner that SSM was unaffected — the exact
+       conclusion question 4 of the brief asks them to prove. Changed to
+       `lab 16 change applied`; what still works must be *measured*, not announced.
+    2. **`var/lab16.env` was written with `EP_IDS=vpce-A vpce-B vpce-C` unquoted.**
+       Sourcing it makes bash run `vpce-B` as a command
+       (`line 5: vpce-…: command not found`) and leaves `EP_IDS` holding only the
+       **first** id. `cleanup` therefore deleted 1 of 3 interface endpoints and
+       left two billing at $0.013/endpoint-hour (~$0.63/month if unnoticed).
+       Fixed: the heredoc now emits `EP_IDS="${ep_ids[*]}"`.
+
+    While fixing cleanup, a third gap appeared: an endpoint re-created **by hand**
+    on the console (the normal learner fix for this lab) has no `Lab=lab16` tag
+    and is not in `var/lab16.env`, so neither cleanup loop could see it. Cleanup
+    now sweeps the lab VPC and deletes endpoints that carry no `Lab` tag (or
+    `Lab=lab16`), skipping anything tagged for another lab. `make test` passes
+    24/24.
+
+    Also logged: the README for lab 16 quotes interface endpoints at
+    "~$0.01/hour/AZ"; the Price List API for `ap-southeast-1`
+    (`APS1-VpcEndpoint-Hours`, effective 2026-11-01) says **$0.013/hour**.
+
+25. **`down 16` left both lab security groups behind, silently.** Observed
+    2026-11-04 00:5x (+07). After `lab 16 resources cleaned`, the two groups
+    `soa-c03-lab16-private` and `soa-c03-lab16-endpoint` still existed.
+
+    Cause: the two groups **reference each other** (the endpoint SG allows inbound
+    443 from the private SG, the private SG allows egress 443 to the endpoint SG),
+    so `DeleteSecurityGroup` returns `DependencyViolation` for whichever is tried
+    first. Cleanup did `sleep 20` and then deleted each once, swallowing the error
+    with `|| true` — the same "hide the failure" pattern as items 18/19/21/22.
+    Security groups have no hourly charge, so `make cost` still looked clean and
+    the leftover would only be found by reading the console.
+
+    Fixed in `lab16_cleanup`: revoke both cross-references before deleting, then
+    retry the delete up to 6 times (10s apart, for lingering endpoint ENIs) and
+    `warn` if a group survives. Verified by hand: revoking the two rules made both
+    groups delete immediately (`InvalidGroup.NotFound` afterwards). `make test`
+    passes 24/24.
+
+
 ## Re-audit 2026-10-26 (brief for all 24 labs)
 
 - Added `BRIEFS` for labs 00–23 in `tools/lab_brief_data.py`: inventory, healthy

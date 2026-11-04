@@ -161,6 +161,31 @@ Trước tiên chạy read-only:
   - Backup plan trùng: `down 19` hoặc `down 22`.
 - Không sửa bằng cách xoá stack app; chỉ dọn resource của lab.
 
+## `make app-up` báo lỗi đỏ nhưng stack vẫn đang tạo
+
+Triệu chứng (2026-11-03):
+
+```text
+Waiting for stack create/update to complete
+aws: [ERROR]: Could not connect to the endpoint URL:
+  "https://cloudformation.ap-southeast-1.amazonaws.com/"
+make: *** [Makefile:31: app-up] Error 255
+```
+
+Đây là **DNS/CLI của máy**, không phải AWS. Stack thật vẫn được tạo. Đừng chạy lại
+`make app-up` (sẽ tạo changeset thừa). Kiểm tra bằng lệnh **read-only**:
+
+```bash
+aws cloudformation describe-stacks --stack-name soa-c03-app \
+  --query 'Stacks[0].StackStatus' --output text
+```
+
+Nếu ra `CREATE_IN_PROGRESS` thì chỉ poll lại lệnh trên cho tới `CREATE_COMPLETE`.
+Nếu `describe` cũng lỗi: kiểm tra `getent hosts cloudformation.ap-southeast-1.amazonaws.com`
+(hoặc `resolvectl status`), đợi DNS ổn rồi chạy lại — một lần thôi.
+
+Quy tắc: **retry cái đọc (`describe-stacks`), không retry cái ghi (`app-up`)**.
+
 ## Verify fail dù đã fix
 
 - Đợi thêm 1-2 phút (ALB health check 15s × 3, alarm evaluation).

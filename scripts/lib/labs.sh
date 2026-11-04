@@ -200,9 +200,13 @@ subscribe_sns_sqs() {
 }
 
 assume_role_env() {
-  local arn="$1" session="${2:-lab}"
-  aws sts assume-role --role-arn "$arn" --role-session-name "$session" \
-    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text \
+  local arn="$1" session="${2:-lab}" out
+  # Must fail loudly: piping straight into awk hid AssumeRole denials, so
+  # callers saw an empty (but successful) eval and the wrong error message.
+  out="$(aws sts assume-role --role-arn "$arn" --role-session-name "$session" \
+    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text 2>/dev/null)" || return 1
+  [[ -n "$out" ]] || return 1
+  printf '%s\n' "$out" \
     | awk '{printf "export AWS_ACCESS_KEY_ID=%s\nexport AWS_SECRET_ACCESS_KEY=%s\nexport AWS_SESSION_TOKEN=%s\n",$1,$2,$3}'
 }
 
@@ -480,10 +484,14 @@ lab03_build() {
 }
 
 lab03_break() {
-  local role id
+  local role id env
   role="$(stack_output_required "$CORE_STACK" LabOperatorRoleArn)"
   id="$(cat "$ROOT/var/lab03-canary-instance")"
-  eval "$(assume_role_env "$role" lab03-break)"
+  # If AssumeRole fails, the terminate would run as the caller's own identity
+  # and the CloudTrail evidence the lab teaches would be wrong.
+  env="$(assume_role_env "$role" lab03-break)" \
+    || { warn "AssumeRole failed — fault NOT injected"; return 1; }
+  eval "$env"
   aws ec2 terminate-instances --instance-ids "$id" >/dev/null
 }
 lab03_verify() {
@@ -876,11 +884,13 @@ lab10_break() {
 }
 
 lab10_verify() {
-  local role_arn bucket secret out
+  local role_arn bucket secret out env
   role_arn="arn:aws:iam::${LAB_ACCOUNT_ID}:role/${LAB_PREFIX}-lab10-reader"
   bucket="$(core_bucket)"
   secret="$(cat "$ROOT/var/lab10-secret-arn" 2>/dev/null || true)"
-  eval "$(assume_role_env "$role_arn" lab10-verify)"
+  env="$(assume_role_env "$role_arn" lab10-verify)" \
+    || { warn "AssumeRole failed for ${LAB_PREFIX}-lab10-reader"; return 1; }
+  eval "$env"
   out="$(aws s3 cp "s3://$bucket/lab10/secret.txt" - 2>&1)" || { warn "S3 read failed: $out"; return 1; }
   aws secretsmanager get-secret-value --secret-id "$secret" --query SecretString --output text >/dev/null 2>&1 \
     || { warn "secret read failed"; return 1; }
@@ -1070,19 +1080,46 @@ lab13_build() {
 }
 
 lab13_break() {
-  local bad="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::111122223333:root\"},\"Action\":\"sts:AssumeRole\"}]}"
+  local bad arn principal
+  # A trust policy must name a principal that exists: aws rejects unknown
+  # account IDs and unknown role ARNs ("Invalid principal in policy"), which
+  # made the old break a silent no-op. A Condition is always accepted and
+  # denies this session because it never authenticates with MFA.
+  bad="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::${LAB_ACCOUNT_ID}:root\"},\"Action\":\"sts:AssumeRole\",\"Condition\":{\"Bool\":{\"aws:MultiFactorAuthPresent\":\"true\"}}}]}"
   printf '%s\n' "$bad" > "$ROOT/var/lab13-trust-bad.json"
   aws iam update-assume-role-policy --role-name "${LAB_PREFIX}-lab13-target" \
-    --policy-document file://"$ROOT/var/lab13-trust-bad.json"
-  info "trust policy now points at a different account"
+    --policy-document file://"$ROOT/var/lab13-trust-bad.json" >/dev/null \
+    || { warn "could not update trust policy — fault NOT injected"; return 1; }
+  principal="$(aws iam get-role --role-name "${LAB_PREFIX}-lab13-target" \
+    --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition.Bool."aws:MultiFactorAuthPresent"' \
+    --output text 2>/dev/null)"
+  [[ "$principal" == "true" ]] || { warn "trust policy unchanged — fault NOT injected"; return 1; }
+  # IAM is eventually consistent: assume-role can still succeed for a few
+  # seconds. Wait until the denial is observable, otherwise the learner starts
+  # the 20-minute diagnosis on a role that still works.
+  arn="arn:aws:iam::${LAB_ACCOUNT_ID}:role/${LAB_PREFIX}-lab13-target"
+  wait_until 60 5 bash -c "! aws sts assume-role --role-arn '$arn' --role-session-name lab13-break-probe >/dev/null 2>&1" \
+    || { warn "AssumeRole still succeeds — fault NOT observed"; return 1; }
+  info "trust policy now carries an extra Condition"
 }
 
 lab13_verify() {
-  local arn; arn="arn:aws:iam::${LAB_ACCOUNT_ID}:role/${LAB_PREFIX}-lab13-target"
-  eval "$(assume_role_env "$arn" lab13-verify 2>/dev/null)" || { warn "AssumeRole failed (trust policy?)"; return 1; }
+  local arn env bucket
+  arn="arn:aws:iam::${LAB_ACCOUNT_ID}:role/${LAB_PREFIX}-lab13-target"
+  # Read the bucket BEFORE assuming the role: the role only has S3 permissions,
+  # so a cloudformation call made with its credentials returns AccessDenied and
+  # the bucket name would be empty.
+  bucket="$(core_bucket)"
+  env="$(assume_role_env "$arn" lab13-verify)" \
+    || { warn "AssumeRole failed (trust policy?)"; return 1; }
+  eval "$env"
   aws sts get-caller-identity --query Arn --output text | grep -q "assumed-role/${LAB_PREFIX}-lab13-target" \
     || { warn "unexpected identity"; return 1; }
-  aws s3 ls "s3://$(core_bucket)" >/dev/null || { warn "S3 access failed"; return 1; }
+  # `aws s3 ls s3://bucket` pages the whole CloudTrail keyspace and hangs (>60s
+  # measured). A delimiter call needs the same s3:ListBucket permission but returns
+  # in ~1s.
+  aws s3api list-objects-v2 --bucket "$bucket" --delimiter / --max-keys 5 >/dev/null \
+    || { warn "S3 access failed"; return 1; }
   ok "AssumeRole works and role can list S3"
 }
 
@@ -1158,37 +1195,110 @@ lab14_cleanup() {
     aws s3api delete-bucket --bucket "$bucket" >/dev/null 2>&1 || true
   fi
   analyzer="$(aws accessanalyzer list-analyzers --query "analyzers[?name=='${LAB_PREFIX}-lab14'].arn" --output text 2>/dev/null || true)"
-  [[ -n "$analyzer" ]] && aws accessanalyzer delete-analyzer --analyzer-arn "$analyzer" >/dev/null 2>&1 || true
+  # delete-analyzer takes --analyzer-name (not --analyzer-arn); the wrong flag failed
+  # silently and left the analyzer behind.
+  [[ -n "$analyzer" ]] && aws accessanalyzer delete-analyzer --analyzer-name "${LAB_PREFIX}-lab14" >/dev/null 2>&1 || true
+  if aws accessanalyzer list-analyzers --query "analyzers[?name=='${LAB_PREFIX}-lab14'].arn" --output text 2>/dev/null | grep -q .; then
+    warn "analyzer ${LAB_PREFIX}-lab14 still exists — delete it manually"
+  fi
   rm -f "$ROOT/var/lab14-bucket" "$ROOT/var/lab14-object.txt"
 }
 
 # --------------------------------------------------------------- lab 15
-lab15_build() {
-  ensure_app_healthy
-  enable_lab_flow_logs lab15
-  local alb_e app_e path old
-  alb_e="$(alb_eni)"; app_e="$(app_eni)"
-  [[ "$alb_e" != "None" && -n "$alb_e" ]] || die "cannot find ALB ENI"
-  # Re-running `up` must replace the previous analysis path, not bill for a
-  # second one. Tag the path so an orphan can be found even if var/ was lost.
-  for old in $(aws ec2 describe-network-insights-paths \
-      --filters "Name=tag:Name,Values=${LAB_PREFIX}-lab15-path" \
-      --query 'NetworkInsightsPaths[].NetworkInsightsPathId' --output text 2>/dev/null || true); do
-    [[ -n "$old" && "$old" != "None" ]] || continue
-    aws ec2 delete-network-insights-path --network-insights-path-id "$old" >/dev/null 2>&1 || true
+# Every analysis path this lab could have created (ALB -> app, TCP 8080).
+# Lab 15 is the only creator of such paths, so they are safe to replace/delete.
+lab15_all_paths() {
+  aws ec2 describe-network-insights-paths \
+    --filters "Name=source,Values=$(alb_eni)" \
+    --query 'NetworkInsightsPaths[?DestinationPort==`8080`].NetworkInsightsPathId' \
+    --output text 2>/dev/null || true
+}
+
+# Path that points at the *live* app instance. Empty when it still targets a
+# terminated ENI: the ASG replaces the instance when health checks fail, which
+# is exactly what this lab's fault causes.
+lab15_path_id() {
+  local id app_e
+  app_e="$(app_eni)"
+  for id in $(lab15_all_paths); do
+    [[ "$id" =~ ^nip- ]] || continue
+    if [[ "$(aws ec2 describe-network-insights-paths --network-insights-path-ids "$id" \
+        --query 'NetworkInsightsPaths[0].Destination' --output text 2>/dev/null || true)" == "$app_e" ]]; then
+      printf '%s' "$id"
+      return 0
+    fi
   done
-  if [[ -f "$ROOT/var/lab15-path" ]]; then
-    old="$(cat "$ROOT/var/lab15-path")"
-    [[ -n "$old" ]] && aws ec2 delete-network-insights-path --network-insights-path-id "$old" >/dev/null 2>&1 || true
-    rm -f "$ROOT/var/lab15-path"
-  fi
+  return 0
+}
+
+lab15_delete_paths() {
+  local id a n
+  for id in $(lab15_all_paths); do
+    [[ "$id" =~ ^nip- ]] || continue
+    # DeleteNetworkInsightsPath fails with AnalysisExistsForNetworkInsightsPath
+    # while any analysis exists, and an analysis can still be running.
+    # DescribeNetworkInsightsAnalyses only accepts the filters status/path-found,
+    # so match the path client-side.
+    for a in $(aws ec2 describe-network-insights-analyses \
+        --query "NetworkInsightsAnalyses[?NetworkInsightsPathId=='$id'].NetworkInsightsAnalysisId" \
+        --output text 2>/dev/null || true); do
+      [[ "$a" =~ ^nia- ]] || continue
+      for n in 1 2 3 4 5 6; do
+        aws ec2 delete-network-insights-analysis --network-insights-analysis-id "$a" >/dev/null 2>&1 && break
+        sleep 10
+      done
+      if aws ec2 describe-network-insights-analyses --network-insights-analysis-ids "$a" \
+          --query 'NetworkInsightsAnalyses[0].NetworkInsightsAnalysisId' --output text 2>/dev/null | grep -q '^nia-'; then
+        warn "could not delete analysis $a"
+      fi
+    done
+    aws ec2 delete-network-insights-path --network-insights-path-id "$id" >/dev/null 2>&1 \
+      || warn "could not delete path $id"
+  done
+  rm -f "$ROOT/var/lab15-path"
+}
+
+# Create the path and record it. Prints the id; dies only if nothing works.
+# Tags go in the create call: a separate create-tags was silently swallowed by
+# `|| true` when the CLI returned an empty id (transient DNS failure).
+lab15_create_path() {
+  local alb_e app_e path
+  alb_e="$(alb_eni)"; app_e="$(app_eni)"
+  [[ "$alb_e" =~ ^eni- ]] || die "cannot find ALB ENI"
+  [[ "$app_e" =~ ^eni- ]] || die "cannot find app ENI"
   path="$(aws ec2 create-network-insights-path \
     --source "$alb_e" --destination "$app_e" \
     --protocol tcp --destination-port 8080 \
-    --query NetworkInsightsPathId --output text)"
-  aws ec2 create-tags --resources "$path" \
-    --tags "Key=Name,Value=${LAB_PREFIX}-lab15-path" "Key=Project,Value=$LAB_PREFIX" "Key=ExpiryDate,Value=$EXPIRY_DATE" >/dev/null 2>&1 || true
+    --tag-specifications "ResourceType=network-insights-path,Tags=[{Key=Name,Value=${LAB_PREFIX}-lab15-path},{Key=Project,Value=${LAB_PREFIX}},{Key=ExpiryDate,Value=$EXPIRY_DATE}]" \
+    --query NetworkInsightsPathId --output text 2>/dev/null || true)"
+  if [[ ! "$path" =~ ^nip- ]]; then
+    warn "create-network-insights-path returned '${path}'; looking for an existing path"
+    path="$(lab15_path_id)"
+  fi
+  [[ "$path" =~ ^nip- ]] || die "cannot create or find the lab15 reachability path"
   printf '%s\n' "$path" > "$ROOT/var/lab15-path"
+  printf '%s' "$path"
+}
+
+lab15_build() {
+  ensure_app_healthy
+  enable_lab_flow_logs lab15
+  # Re-running `up` must replace the previous analysis path, not bill for a
+  # second one.
+  lab15_delete_paths
+  lab15_create_path >/dev/null
+}
+
+# Verify runs after the learner fixed the SG, i.e. often after the ASG already
+# replaced the instance — so re-create the path when it targets a dead ENI.
+lab15_ensure_path() {
+  local id
+  id="$(lab15_path_id)"
+  if [[ -n "$id" ]]; then printf '%s' "$id"; return 0; fi
+  # warn(), not info(): info() writes to stdout and would corrupt the $(...) value
+  warn "reachability path points at a replaced instance; recreating it"
+  lab15_delete_paths
+  lab15_create_path
 }
 
 lab15_break() {
@@ -1198,40 +1308,35 @@ lab15_break() {
 
 lab15_verify() {
   local path analysis status found rule code
-  path="$(cat "$ROOT/var/lab15-path" 2>/dev/null || true)"
   rule="$(aws ec2 describe-security-groups --group-ids "$(app_sg_id)" \
     --query "SecurityGroups[0].IpPermissions[?FromPort==\`8080\`] | length(@)" --output text)"
   code="$(http_code "$(app_url)/health")"
   [[ "$rule" -ge 1 ]] || { warn "app SG is missing 8080 ingress"; return 1; }
   [[ "$code" == "200" ]] || { warn "app health=$code"; return 1; }
-  if [[ -n "$path" ]]; then
-    analysis="$(aws ec2 start-network-insights-analysis --network-insights-path-id "$path" \
-      --query NetworkInsightsAnalysisId --output text)"
-    for _ in $(seq 1 30); do
-      status="$(aws ec2 describe-network-insights-analyses --network-insights-analysis-ids "$analysis" \
-        --query 'NetworkInsightsAnalyses[0].Status' --output text 2>/dev/null || echo running)"
-      [[ "$status" == "succeeded" || "$status" == "failed" ]] && break
-      sleep 5
-    done
-    found="$(aws ec2 describe-network-insights-analyses --network-insights-analysis-ids "$analysis" \
-      --query 'NetworkInsightsAnalyses[0].NetworkPathFound' --output text 2>/dev/null || echo False)"
-    [[ "$found" == "True" ]] || { warn "Reachability Analyzer: pathFound=$found status=$status"; return 1; }
-  fi
-  ok "SG rule present, app=$code, reachability=reachable"
+  path="$(lab15_ensure_path)"
+  [[ -n "$path" ]] || { warn "no Reachability Analyzer path; run ./bin/lab up 15"; return 1; }
+  analysis="$(aws ec2 start-network-insights-analysis --network-insights-path-id "$path" \
+    --query 'NetworkInsightsAnalysis.NetworkInsightsAnalysisId' --output text 2>/dev/null || true)"
+  [[ "$analysis" =~ ^nia- ]] || { warn "cannot start analysis on path $path"; return 1; }
+  for _ in $(seq 1 30); do
+    status="$(aws ec2 describe-network-insights-analyses --network-insights-analysis-ids "$analysis" \
+      --query 'NetworkInsightsAnalyses[0].Status' --output text 2>/dev/null || echo running)"
+    [[ "$status" == "succeeded" || "$status" == "failed" ]] && break
+    sleep 5
+  done
+  found="$(aws ec2 describe-network-insights-analyses --network-insights-analysis-ids "$analysis" \
+    --query 'NetworkInsightsAnalyses[0].NetworkPathFound' --output text 2>/dev/null || echo False)"
+  [[ "$found" == "True" ]] || { warn "Reachability Analyzer: pathFound=$found status=$status"; return 1; }
+  ok "SG rule present, app=$code, reachability=reachable (path $path)"
 }
 
 lab15_reset() { authorize_app_8080; }
 lab15_cleanup() {
   stack_exists "$APP_STACK" && lab15_reset || true
-  local path
-  path="$(cat "$ROOT/var/lab15-path" 2>/dev/null || true)"
-  [[ -n "$path" ]] && aws ec2 delete-network-insights-path --network-insights-path-id "$path" >/dev/null 2>&1 || true
-  for path in $(aws ec2 describe-network-insights-paths \
-      --filters "Name=tag:Name,Values=${LAB_PREFIX}-lab15-path" \
-      --query 'NetworkInsightsPaths[].NetworkInsightsPathId' --output text 2>/dev/null || true); do
-    [[ -n "$path" && "$path" != "None" ]] || continue
-    aws ec2 delete-network-insights-path --network-insights-path-id "$path" >/dev/null 2>&1 || true
-  done
+  lab15_delete_paths
+  if [[ -n "$(lab15_all_paths)" ]]; then
+    warn "a Reachability Analyzer path still exists — delete it manually"
+  fi
   disable_lab_flow_logs lab15
   rm -f "$ROOT/var/lab15-path"
 }
@@ -1314,7 +1419,7 @@ INSTANCE=$instance
 PRIVATE_SG=$private_sg
 ENDPOINT_SG=$endpoint_sg
 S3_VPCE=$s3_vpce
-EP_IDS=${ep_ids[*]}
+EP_IDS="${ep_ids[*]}"
 RT=$rt
 EOF
   info "waiting for SSM registration on the private instance (up to 5 minutes)"
@@ -1326,7 +1431,7 @@ lab16_break() {
   # shellcheck disable=SC1091
   source "$ROOT/var/lab16.env"
   aws ec2 delete-vpc-endpoints --vpc-endpoint-ids "$S3_VPCE" >/dev/null
-  info "S3 gateway endpoint deleted; private instance still has SSM via interface endpoints"
+  info "lab 16 change applied"
 }
 
 lab16_verify() {
@@ -1356,7 +1461,7 @@ lab16_reset() {
 }
 
 lab16_cleanup() {
-  local vpc ep sg_id
+  local vpc ep ep_lab ep_name sg_id sg_left
   vpc="$(core_vpc_id 2>/dev/null || true)"
   if [[ -f "$ROOT/var/lab16.env" ]]; then
     # shellcheck disable=SC1091
@@ -1378,9 +1483,48 @@ lab16_cleanup() {
       aws ec2 delete-vpc-endpoints --vpc-endpoint-ids "$ep" >/dev/null 2>&1 || true
       wait_vpc_endpoints_deleted "$ep" || true
     done
+    # An endpoint re-created by hand (console/CLI) carries no Lab tag and is not
+    # in var/lab16.env, so the loops above miss it: interface endpoints would
+    # keep billing hourly. Sweep the lab VPC, but never touch another lab's or
+    # the core stack's endpoints.
+    while read -r ep ep_lab ep_name; do
+      [[ -n "$ep" && "$ep" != "None" ]] || continue
+      [[ "$ep_lab" == "None" ]] && ep_lab=""
+      [[ "$ep_name" == "None" ]] && ep_name=""
+      [[ -n "$ep_lab" && "$ep_lab" != "lab16" ]] && continue
+      [[ -n "$ep_name" && "$ep_name" != *lab16* ]] && continue
+      warn "deleting VPC endpoint not tracked by lab 16 state: $ep ${ep_name:+($ep_name)}"
+      aws ec2 delete-vpc-endpoints --vpc-endpoint-ids "$ep" >/dev/null 2>&1 || true
+      wait_vpc_endpoints_deleted "$ep" || true
+    done <<< "$(aws ec2 describe-vpc-endpoints --filters "Name=vpc-id,Values=$vpc" \
+        --query 'VpcEndpoints[?State!=`deleted`].[VpcEndpointId, join(`,`,Tags[?Key==`Lab`].Value), join(`,`,Tags[?Key==`Name`].Value)]' \
+        --output text 2>/dev/null || true)"
     sleep 20
+    # The two lab SGs reference each other (endpoint SG allows inbound 443 from
+    # the private SG, the private SG allows egress 443 to the endpoint SG), so
+    # AWS refuses to delete either one first (DependencyViolation) and the old
+    # `|| true` hid the failure. Revoke the cross references, then delete.
+    if [[ -n "${PRIVATE_SG:-}" && -n "${ENDPOINT_SG:-}" ]]; then
+      aws ec2 revoke-security-group-ingress --group-id "$ENDPOINT_SG" \
+        --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,UserIdGroupPairs=[{GroupId=$PRIVATE_SG}]" \
+        >/dev/null 2>&1 || true
+      aws ec2 revoke-security-group-egress --group-id "$PRIVATE_SG" \
+        --ip-permissions "IpProtocol=tcp,FromPort=443,ToPort=443,UserIdGroupPairs=[{GroupId=$ENDPOINT_SG}]" \
+        >/dev/null 2>&1 || true
+    fi
     for sg_id in "${PRIVATE_SG:-}" "${ENDPOINT_SG:-}"; do
-      [[ -n "$sg_id" ]] && aws ec2 delete-security-group --group-id "$sg_id" >/dev/null 2>&1 || true
+      [[ -n "$sg_id" ]] || continue
+      sg_left=1
+      for _ in 1 2 3 4 5 6; do
+        if aws ec2 delete-security-group --group-id "$sg_id" >/dev/null 2>&1; then
+          sg_left=0
+          break
+        fi
+        sleep 10
+      done
+      if (( sg_left )); then
+        warn "security group left behind by lab 16 cleanup: $sg_id"
+      fi
     done
     for sg_id in $(aws ec2 describe-security-groups \
         --filters "Name=vpc-id,Values=$vpc" "Name=group-name,Values=${LAB_PREFIX}-lab16-private,${LAB_PREFIX}-lab16-endpoint" \

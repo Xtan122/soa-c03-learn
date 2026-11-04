@@ -352,9 +352,10 @@ for alias in $(aws kms list-aliases \
 done
 
 for analyzer in $(aws accessanalyzer list-analyzers \
-  --query "analyzers[?starts_with(name, '$LAB_PREFIX')].arn" --output text 2>/dev/null || true); do
+  --query "analyzers[?starts_with(name, '$LAB_PREFIX')].name" --output text 2>/dev/null || true); do
   info "access analyzer $analyzer"
-  aws accessanalyzer delete-analyzer --analyzer-arn "$analyzer" >/dev/null 2>&1 || true
+  # delete-analyzer takes --analyzer-name, not --analyzer-arn.
+  aws accessanalyzer delete-analyzer --analyzer-name "$analyzer" >/dev/null 2>&1 || true
 done
 
 # If the first core deletion was blocked by an orphan ENI/SG, retry after the

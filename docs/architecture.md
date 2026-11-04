@@ -34,7 +34,7 @@ Vì sao tách:
 NAT Gateway ~USD 0.059/giờ (~42/tháng ở ap-southeast-1). Với lab:
 
 - Public subnet dùng IGW (miễn phí).
-- Private subnet dùng **Gateway VPC Endpoint cho S3** (miễn phí) và **Interface Endpoint cho SSM** (~0.01/giờ/AZ) khi cần.
+- Private subnet dùng **Gateway VPC Endpoint cho S3** (miễn phí) và **Interface Endpoint cho SSM** (**$0.013**/giờ/AZ, Price List 2026-11-01) khi cần.
 - Chỉ bật NAT trong một lab ngắn nếu thực sự muốn so sánh.
 
 `EnableNat=true` trong `platform/core.yaml` tạo NAT + route; nhớ set lại `false` ngay sau lab.

@@ -95,7 +95,7 @@ make cost
 
 ## 5b. Ghi chú / lệnh riêng
 
-Interface endpoint tốn ~$0.01/giờ/AZ. `down 16` dọn hết. Không bật NAT cho lab này.
+Interface endpoint tốn **$0.013/giờ/AZ** (Price List `ap-southeast-1`, 2026-11-01) — lab tạo 3 cái ⇒ ~$0.039/giờ. `down 16` dọn hết. Không bật NAT cho lab này.
 
 <!-- console-guide:start -->
 ## 5c. Console — bấm ở đâu, thấy gì
