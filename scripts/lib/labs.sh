@@ -1735,8 +1735,9 @@ lab19_build() {
     --policy-arn arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores >/dev/null 2>&1 || true
   aws backup create-backup-vault --backup-vault-name "$vault" >/dev/null 2>&1 || true
 
+  # create-backup-plan takes the plan object itself (no "BackupPlan" wrapper).
   cat > "$ROOT/var/lab19-plan.json" <<JSON
-{"BackupPlan":{"BackupPlanName":"${LAB_PREFIX}-lab19-plan","Rules":[{"RuleName":"daily","TargetBackupVaultName":"$vault","ScheduleExpression":"cron(0 5 ? * * *)","Lifecycle":{"DeleteAfterDays":7}}]}}
+{"BackupPlanName":"${LAB_PREFIX}-lab19-plan","Rules":[{"RuleName":"daily","TargetBackupVaultName":"$vault","ScheduleExpression":"cron(0 5 ? * * *)","Lifecycle":{"DeleteAfterDays":7}}]}
 JSON
   plan_id="$(aws backup list-backup-plans \
     --query "BackupPlansList[?BackupPlanName=='${LAB_PREFIX}-lab19-plan'].BackupPlanId | [0]" \
@@ -1789,12 +1790,32 @@ JSON
   cat > "$ROOT/var/lab19-delivery.json" <<JSON
 {"name":"${LAB_PREFIX}-lab19","s3BucketName":"$bucket","configSnapshotDeliveryProperties":{"deliveryFrequency":"TwentyFour_Hours"}}
 JSON
-  aws configservice put-delivery-channel --delivery-channel file://"$ROOT/var/lab19-delivery.json" >/dev/null 2>&1 || true
   cat > "$ROOT/var/lab19-recorder.json" <<JSON
 {"name":"${LAB_PREFIX}-lab19","roleARN":"$cfg_role","recordingGroup":{"allSupported":true,"includeGlobalResourceTypes":true}}
 JSON
-  aws configservice put-configuration-recorder --configuration-recorder file://"$ROOT/var/lab19-recorder.json" >/dev/null 2>&1 || true
-  aws configservice start-configuration-recorder --configuration-recorder-name "${LAB_PREFIX}-lab19" >/dev/null 2>&1 || true
+  # Config validates the delivery channel + bucket policy + IAM role when the
+  # recorder starts, and those can still be propagating right after creation
+  # (seen 2026-11-06: put-delivery-channel/start were swallowed by `|| true`,
+  # leaving a recorder that existed but recorded nothing). Retry, then verify.
+  local started=no rec=no
+  for _ in $(seq 1 12); do
+    aws configservice put-delivery-channel --delivery-channel file://"$ROOT/var/lab19-delivery.json" >/dev/null 2>&1 || true
+    aws configservice put-configuration-recorder --configuration-recorder file://"$ROOT/var/lab19-recorder.json" >/dev/null 2>&1 || true
+    if aws configservice start-configuration-recorder \
+        --configuration-recorder-name "${LAB_PREFIX}-lab19" >/dev/null 2>&1; then
+      started=yes; break
+    fi
+    sleep 10
+  done
+  [[ "$started" == yes ]] || { warn "could not start Config recorder ${LAB_PREFIX}-lab19"; return 1; }
+  for _ in $(seq 1 12); do
+    rec="$(aws configservice describe-configuration-recorder-status \
+      --query "ConfigurationRecordersStatus[?name=='${LAB_PREFIX}-lab19'].recording | [0]" \
+      --output text 2>/dev/null || true)"
+    [[ "$rec" == "True" ]] && break
+    sleep 5
+  done
+  [[ "$rec" == "True" ]] || { warn "Config recorder ${LAB_PREFIX}-lab19 is not recording"; return 1; }
   aws configservice put-config-rule --config-rule "{\"ConfigRuleName\":\"${LAB_PREFIX}-lab19-encrypted-volumes\",\"Source\":{\"Owner\":\"AWS\",\"SourceIdentifier\":\"ENCRYPTED_VOLUMES\"}}" >/dev/null 2>&1 || true
 
   # ---- cost: a small dedicated budget
@@ -1806,9 +1827,11 @@ JSON
 }
 
 lab19_break() {
+  # Neutral wording on purpose: this output must not reveal the change (see
+  # audit-report TOOLING_LEAK_1602/1802/1902).
   aws configservice stop-configuration-recorder \
     --configuration-recorder-name "${LAB_PREFIX}-lab19" >/dev/null 2>&1 || true
-  info "Config recorder stopped. Compliance data is now stale."
+  info "lab 19 change applied"
 }
 
 lab19_verify() {
@@ -1838,41 +1861,88 @@ lab19_reset() {
 }
 
 lab19_cleanup() {
-  # backup
-  local plan_id vault bucket
+  # Order matters and every step is retried: DeleteBackupPlan refuses while the plan
+  # still has selections, DeleteBackupVault refuses while recovery points are still
+  # being deleted (async), and Config deletes are eventually consistent. Seen
+  # 2026-11-06: `down 19` printed "cleaned" while plan/selection/vault/rule survived
+  # because each failure was swallowed by `|| true`.
+  local plan_id vault bucket rp rps sel left
   plan_id="$(cat "$ROOT/var/lab19-plan-id" 2>/dev/null || true)"
   vault="$(cat "$ROOT/var/lab19-vault" 2>/dev/null || true)"
-  [[ -n "$plan_id" ]] && aws backup delete-backup-plan --backup-plan-id "$plan_id" >/dev/null 2>&1 || true
-  # Fallback if var/ was lost: delete every plan with the lab's name.
-  for plan_id in $(aws backup list-backup-plans \
+  [[ -n "$vault" ]] || vault="${LAB_PREFIX}-lab19"
+
+  for plan_id in ${plan_id:-} $(aws backup list-backup-plans \
       --query "BackupPlansList[?BackupPlanName=='${LAB_PREFIX}-lab19-plan'].BackupPlanId" \
       --output text 2>/dev/null || true); do
     [[ -n "$plan_id" && "$plan_id" != "None" ]] || continue
-    aws backup delete-backup-plan --backup-plan-id "$plan_id" >/dev/null 2>&1 || true
+    for sel in $(aws backup list-backup-selections --backup-plan-id "$plan_id" \
+        --query 'BackupSelectionsList[].SelectionId' --output text 2>/dev/null || true); do
+      [[ -n "$sel" && "$sel" != "None" ]] || continue
+      aws backup delete-backup-selection --backup-plan-id "$plan_id" --selection-id "$sel" >/dev/null 2>&1 || true
+    done
+    local _i
+    for _i in $(seq 1 6); do
+      aws backup delete-backup-plan --backup-plan-id "$plan_id" >/dev/null 2>&1 && break
+      sleep 5
+    done
   done
-  if [[ -n "$vault" ]]; then
-    for rp in $(aws backup list-recovery-points-by-backup-vault --backup-vault-name "$vault" --query 'RecoveryPoints[].RecoveryPointArn' --output text 2>/dev/null); do
+
+  for _i in $(seq 1 20); do
+    rps="$(aws backup list-recovery-points-by-backup-vault --backup-vault-name "$vault" \
+      --query 'RecoveryPoints[].RecoveryPointArn' --output text 2>/dev/null || true)"
+    [[ -z "$rps" || "$rps" == "None" ]] && break
+    for rp in $rps; do
       aws backup delete-recovery-point --backup-vault-name "$vault" --recovery-point-arn "$rp" >/dev/null 2>&1 || true
     done
-    aws backup delete-backup-vault --backup-vault-name "$vault" >/dev/null 2>&1 || true
-  fi
+    sleep 15
+  done
+  for _i in $(seq 1 12); do
+    aws backup delete-backup-vault --backup-vault-name "$vault" >/dev/null 2>&1 && break
+    sleep 10
+  done
+
   aws iam detach-role-policy --role-name "${LAB_PREFIX}-lab19-backup" --policy-arn arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup >/dev/null 2>&1 || true
   aws iam detach-role-policy --role-name "${LAB_PREFIX}-lab19-backup" --policy-arn arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores >/dev/null 2>&1 || true
   aws iam delete-role --role-name "${LAB_PREFIX}-lab19-backup" >/dev/null 2>&1 || true
 
   # config
   aws configservice stop-configuration-recorder --configuration-recorder-name "${LAB_PREFIX}-lab19" >/dev/null 2>&1 || true
-  aws configservice delete-configuration-recorder --configuration-recorder-name "${LAB_PREFIX}-lab19" >/dev/null 2>&1 || true
-  aws configservice delete-delivery-channel --delivery-channel-name "${LAB_PREFIX}-lab19" >/dev/null 2>&1 || true
-  aws configservice delete-config-rule --config-rule-name "${LAB_PREFIX}-lab19-encrypted-volumes" >/dev/null 2>&1 || true
+  for _i in $(seq 1 6); do
+    aws configservice delete-configuration-recorder --configuration-recorder-name "${LAB_PREFIX}-lab19" >/dev/null 2>&1 && break
+    sleep 5
+  done
+  for _i in $(seq 1 6); do
+    aws configservice delete-delivery-channel --delivery-channel-name "${LAB_PREFIX}-lab19" >/dev/null 2>&1 && break
+    sleep 5
+  done
+  for _i in $(seq 1 6); do
+    aws configservice delete-config-rule --config-rule-name "${LAB_PREFIX}-lab19-encrypted-volumes" >/dev/null 2>&1 && break
+    sleep 5
+  done
   aws iam detach-role-policy --role-name "${LAB_PREFIX}-lab19-config" --policy-arn arn:aws:iam::aws:policy/service-role/AWS_ConfigRole >/dev/null 2>&1 || true
   aws iam delete-role --role-name "${LAB_PREFIX}-lab19-config" >/dev/null 2>&1 || true
 
   bucket="$(cat "$ROOT/var/lab19-bucket" 2>/dev/null || true)"
-  [[ -n "$bucket" ]] && aws s3 rm "s3://$bucket" --recursive >/dev/null 2>&1 || true
-  [[ -n "$bucket" ]] && aws s3api delete-bucket --bucket "$bucket" >/dev/null 2>&1 || true
+  [[ -n "$bucket" ]] || bucket="${LAB_PREFIX}-lab19-config-${LAB_ACCOUNT_ID}"
+  aws s3 rm "s3://$bucket" --recursive >/dev/null 2>&1 || true
+  for _i in $(seq 1 6); do
+    aws s3api delete-bucket --bucket "$bucket" >/dev/null 2>&1 && break
+    sleep 5
+  done
   aws budgets delete-budget --account-id "$LAB_ACCOUNT_ID" --budget-name "${LAB_PREFIX}-lab19" >/dev/null 2>&1 || true
-  rm -f "$ROOT/var/lab19-"* 
+
+  # Prove the teardown instead of claiming it.
+  left="$(aws backup list-backup-vaults \
+    --query "BackupVaultList[?BackupVaultName=='$vault'].BackupVaultName" --output text 2>/dev/null || true)"
+  [[ -z "$left" || "$left" == "None" ]] || warn "lab19 backup vault still present: $left"
+  left="$(aws backup list-backup-plans \
+    --query "BackupPlansList[?BackupPlanName=='${LAB_PREFIX}-lab19-plan'].BackupPlanId" --output text 2>/dev/null || true)"
+  [[ -z "$left" || "$left" == "None" ]] || warn "lab19 backup plan still present: $left"
+  left="$(aws configservice describe-config-rules \
+    --query "ConfigRules[?ConfigRuleName=='${LAB_PREFIX}-lab19-encrypted-volumes'].ConfigRuleName" --output text 2>/dev/null || true)"
+  [[ -z "$left" || "$left" == "None" ]] || warn "lab19 config rule still present: $left"
+
+  rm -f "$ROOT/var/lab19-"*
 }
 
 # --------------------------------------------------------------- lab 20

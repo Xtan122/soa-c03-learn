@@ -445,6 +445,42 @@ Note for future cleanup passes: the automated snapshots listed in item 13/14 wer
     groups delete immediately (`InvalidGroup.NotFound` afterwards). `make test`
     passes 24/24.
 
+26. **Lab 19 could not finish `up`, could silently leave the recorder OFF, and
+    `down 19` claimed a cleanup it had not done.** Observed 2026-11-06
+    15:0x–16:1x (+07). Four defects in one lab:
+
+    1. **`up 19` aborted with `ParamValidation: Missing required parameter in
+       BackupPlan: "BackupPlanName"`.** `var/lab19-plan.json` wrapped the plan in
+       `{"BackupPlan":{…}}`, but `create-backup-plan` expects the bare object.
+       Removed the wrapper.
+    2. **The Config delivery channel and recorder start were wrapped in
+       `|| true`.** `put-delivery-channel` failed transiently
+       (`NoAvailableDeliveryChannelException` on the later `start`), so `up 19`
+       reported success while `describe-configuration-recorder-status` said
+       `recording=False` — the exact healthy baseline the lab teaches. `up` now
+       retries both calls (12 × 10s) and **fails** if `recording` is not `True`.
+    3. **`down 19` printed `lab 19 resources cleaned` while the backup plan, its
+       selection, the vault and the Config rule still existed.** `DeleteBackupPlan`
+       refuses while a selection exists, `DeleteBackupVault` refuses while
+       recovery points are still being deleted (async), and each failure was
+       swallowed. Cleanup now deletes selections first, polls until recovery
+       points are gone, retries plan/vault/recorder/channel/rule/bucket, and
+       re-reads all three at the end, warning if anything survived — same
+       "prove it, do not claim it" rule as items 21/22/24/25. Leftovers were
+       removed by hand in the same session; `make cost` after showed
+       0 EC2/RDS/ALB/NAT/EIP/ECS/EKS.
+    4. **`break 19` printed `Config recorder stopped. Compliance data is now
+       stale.`** — it announced the change the learner is supposed to discover
+       (same class as items 16/18). Changed to `lab 19 change applied`.
+
+    Price check for the lab's new services (`ap-southeast-1`, Price List API,
+    2026-11-06): AWS Config **$0.003/config-item recorded**, **$0.012/config-item
+    recorded daily**, rule evaluation **$0.001** (first 100k). AWS Backup returned
+    **no warm-storage line for RDS**, so that rate stays "chưa xác minh" until
+    `make cost` reconciles it. The recorder reached 37 config items in ~10 min,
+    i.e. ~$0.11 one-off plus the daily per-item charge — cheap for one session,
+    non-trivial if a recorder is left on for weeks.
+
 
 ## Re-audit 2026-10-26 (brief for all 24 labs)
 

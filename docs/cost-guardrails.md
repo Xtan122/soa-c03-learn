@@ -31,6 +31,9 @@
 | Secrets Manager | $0.40/secret-month + $0.05/10k requests | ~$0.002 | $0.40 |
 | CloudWatch Logs ingest | $0.50/GB (first 10 TB) | cents | tùy log |
 | CloudWatch alarm | $0.10/alarm-month | ~$0 | $0.10/alarm |
+| AWS Config — configuration item recorded | **$0.003/CI** (kiểm 2026-11-06) | ~$0.11 cho 37 CI | tùy số tài nguyên |
+| AWS Config — CI recorded daily | **$0.012/CI/ngày** | ~$0.44/ngày với 37 CI | **~$13/tháng với 37 CI** |
+| AWS Backup warm storage (RDS) | **chưa xác minh** — Price List không trả dòng RDS; EFS/S3 $0.06, EKS $0.012, SAP HANA $0.072/GB-month | cents (DB lab ~0 byte) | tùy GB |
 | S3 Standard | $0.025/GB-month (first 50 TB) | cents | tùy dung lượng |
 | EBS snapshot | $0.05/GB-month | cents | tùy dung lượng |
 | Lambda / SNS / SQS / SSM / IAM / CloudTrail mgmt | free/cent | ~$0 | ~$0 |
