@@ -1,0 +1,2 @@
+verify 2026-11-06T08:46:27Z lab=19
+ OK  backup=COMPLETED recoveryPoints=1 config=recording budget=soa-c03-lab19 costExplorer=7

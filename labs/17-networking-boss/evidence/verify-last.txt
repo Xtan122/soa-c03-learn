@@ -1,0 +1,2 @@
+verify 2026-11-04T07:48:06Z lab=17
+ OK  SG=allow NACL=allow path=/health health=200 targets=1
